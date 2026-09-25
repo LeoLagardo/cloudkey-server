@@ -1,0 +1,492 @@
+import secrets
+import string
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
+from typing import List, Optional
+from sqlalchemy import select, and_, or_
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.crud.guest import crud_guest
+from app.crud.reservation import crud_reservation
+from app.models.folio import Folio, FolioTransaction, Payment, PaymentMethod
+from app.models.operation import AuditLog
+from app.models.property import Property
+from app.models.rate_plan import RatePlan
+from app.models.rate_plan_rate import RatePlanRate
+from app.models.reservation import (
+    Reservation,
+    ReservationGuest,
+    ReservationRoom,
+    ReservationRoomRate,
+)
+from app.models.room import Room
+from app.models.room_type import RoomType
+from app.models.tax import TaxGroup, TaxGroupItem, TaxRate
+from app.schemas.reservation import (
+    ReservationCreate,
+    ReservationResponse,
+    FolioSummaryResponse,
+    PaymentSummaryResponse,
+    GuestSummaryResponse,
+)
+from app.utils.enums import (
+    BookingType,
+    EntityStatus,
+    FolioEntryType,
+    FolioStatus,
+    FolioTransactionSource,
+    FolioTransactionType,
+    FolioType,
+    PaymentStatus,
+    PaymentType,
+    ReservationStatus,
+    TaxRateType,
+)
+from app.utils.exceptions import EntityNotFoundException, ValidationException
+
+
+class ReservationService:
+    @staticmethod
+    def _generate_random_code(length: int = 6) -> str:
+        """Generate uppercase alphanumeric random string omitting ambiguous characters."""
+        alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+        return "".join(secrets.choice(alphabet) for _ in range(length))
+
+    async def generate_booking_number(self, db: AsyncSession, property_code: str) -> str:
+        """
+        Generate collision-free booking number with hotel code prefix:
+        Format: {HOTEL_CODE}-{YYMM}-{6_CHAR_RANDOM}
+        """
+        clean_prefix = (property_code or "BK").upper().strip().replace(" ", "")[:6]
+        period = datetime.now(timezone.utc).strftime("%y%m")
+
+        for _ in range(10):
+            random_part = self._generate_random_code(6)
+            candidate = f"{clean_prefix}-{period}-{random_part}"
+
+            # Check uniqueness against DB
+            exists = await crud_reservation.get_by_booking_number(
+                db, property_id="", booking_number=candidate
+            )
+            # If property_id check in get_by_booking_number is property-scoped, also verify globally
+            result = await db.execute(
+                select(Reservation.id).where(Reservation.booking_number == candidate)
+            )
+            if not result.scalar_one_or_none():
+                return candidate
+
+        # Fallback with timestamp microsecond suffix
+        return f"{clean_prefix}-{period}-{secrets.token_hex(4).upper()}"
+
+    def generate_folio_number(self, property_code: str) -> str:
+        """Generate unique folio number with hotel code prefix."""
+        clean_prefix = (property_code or "PROP").upper().strip().replace(" ", "")[:6]
+        period = datetime.now(timezone.utc).strftime("%y%m")
+        random_part = self._generate_random_code(6)
+        return f"FOL-{clean_prefix}-{period}-{random_part}"
+
+    async def _calculate_taxes_for_rate(
+        self,
+        db: AsyncSession,
+        tax_group_id: Optional[str],
+        base_amount: Decimal,
+        stay_date: date,
+    ) -> Decimal:
+        """Calculate total tax amount based on RatePlan's TaxGroup and active TaxRates."""
+        if not tax_group_id:
+            return Decimal("0.00")
+
+        # Load tax group with items
+        result = await db.execute(
+            select(TaxGroup)
+            .where(TaxGroup.id == tax_group_id, TaxGroup.status == EntityStatus.ACTIVE.value)
+            .options(selectinload(TaxGroup.items))
+        )
+        tax_group = result.scalar_one_or_none()
+        if not tax_group or not tax_group.items:
+            return Decimal("0.00")
+
+        total_tax = Decimal("0.00")
+        for item in tax_group.items:
+            # Query active rate for this tax
+            rate_query = await db.execute(
+                select(TaxRate)
+                .where(
+                    TaxRate.tax_id == item.tax_id,
+                    TaxRate.valid_from <= stay_date,
+                    or_(TaxRate.valid_to.is_(None), TaxRate.valid_to >= stay_date),
+                    or_(TaxRate.min_amount.is_(None), TaxRate.min_amount <= base_amount),
+                    or_(TaxRate.max_amount.is_(None), TaxRate.max_amount >= base_amount),
+                )
+                .order_by(TaxRate.created_at.desc())
+            )
+            tax_rate = rate_query.scalars().first()
+            if tax_rate:
+                if tax_rate.rate_type == TaxRateType.PERCENTAGE.value:
+                    tax_for_item = (base_amount * tax_rate.rate) / Decimal("100")
+                else:
+                    tax_for_item = tax_rate.rate
+                total_tax += tax_for_item
+
+        return total_tax.quantize(Decimal("0.01"))
+
+    async def create_reservation(
+        self,
+        db: AsyncSession,
+        property_id: str,
+        res_in: ReservationCreate,
+        current_user_id: Optional[str] = None,
+    ) -> ReservationResponse:
+        """
+        Executes atomic multi-table reservation creation:
+        1. Validates property, room types, rate plans, and optional advance payment method.
+        2. Generates hotel-code-prefixed booking number and folio number.
+        3. Finds or creates the booker in the `guests` table.
+        4. Snapshots daily or hourly rates from `rate_plan_rates` into `reservation_room_rates`.
+        5. Inserts `reservations` (status=CONFIRMED) and `reservation_rooms`.
+        6. Links occupants via `reservation_guests`.
+        7. Creates 1 OPEN `folios` record.
+        8. If advance payment provided: inserts `payments` and `folio_transactions` (CREDIT, PAYMENT).
+        9. Inserts 1 row in `audit_logs`.
+        """
+        # 1. Fetch & Validate Property
+        property_obj = await db.get(Property, property_id)
+        if not property_obj:
+            raise EntityNotFoundException("Property", property_id)
+
+        # 2. Validate Payment Method if advance payment is provided
+        payment_method = None
+        if res_in.advance_payment:
+            pm_result = await db.execute(
+                select(PaymentMethod).where(
+                    PaymentMethod.id == res_in.advance_payment.payment_method_id,
+                    PaymentMethod.property_id == property_id,
+                    PaymentMethod.status == EntityStatus.ACTIVE.value,
+                )
+            )
+            payment_method = pm_result.scalar_one_or_none()
+            if not payment_method:
+                raise ValidationException("Specified payment method not found or inactive for this property.")
+
+        # 3. Validate Room Types & Rate Plans
+        for room_in in res_in.rooms:
+            rt = await db.get(RoomType, room_in.room_type_id)
+            if not rt or rt.property_id != property_id:
+                raise ValidationException(f"Room type '{room_in.room_type_id}' is invalid for this property.")
+
+            rp = await db.get(RatePlan, room_in.rate_plan_id)
+            if not rp or rp.property_id != property_id or rp.room_type_id != room_in.room_type_id:
+                raise ValidationException(f"Rate plan '{room_in.rate_plan_id}' does not match room type.")
+
+            if room_in.check_in_at >= room_in.check_out_at:
+                raise ValidationException("Check-in time must be before check-out time.")
+
+            if room_in.room_id:
+                room_obj = await db.get(Room, room_in.room_id)
+                if not room_obj or room_obj.property_id != property_id or room_obj.room_type_id != room_in.room_type_id:
+                    raise ValidationException(f"Room '{room_in.room_id}' is invalid or does not match room type.")
+
+        # 4. Generate Unique Booking Number with Hotel Code Prefix
+        booking_number = await self.generate_booking_number(db, property_code=property_obj.code)
+
+        # 5. Find or Create Booker in `guests` (scoped to organization)
+        booker = await crud_guest.find_or_create(
+            db,
+            organization_id=property_obj.organization_id,
+            guest_data=res_in.booker,
+        )
+
+        # Determine overall reservation check-in and check-out
+        res_check_in = min(r.check_in_at for r in res_in.rooms)
+        res_check_out = max(r.check_out_at for r in res_in.rooms)
+
+        # 6. Initialize Reservation Model
+        reservation = Reservation(
+            property_id=property_id,
+            booking_number=booking_number,
+            guest_id=booker.id,
+            company_id=res_in.company_id,
+            booking_type=res_in.booking_type.value,
+            source=res_in.source.value,
+            channel_name=res_in.channel_name,
+            channel_booking_ref=res_in.channel_booking_ref,
+            status=ReservationStatus.CONFIRMED.value,
+            check_in_at=res_check_in,
+            check_out_at=res_check_out,
+            currency=res_in.currency or property_obj.currency or "INR",
+            special_requests=res_in.special_requests,
+            created_by=current_user_id,
+        )
+        db.add(reservation)
+        await db.flush()
+
+        res_total_amount = Decimal("0.00")
+        res_total_tax = Decimal("0.00")
+
+        # 7. Process Rooms, Occupants & Rate Snapshots
+        for room_in in res_in.rooms:
+            res_room = ReservationRoom(
+                reservation_id=reservation.id,
+                room_type_id=room_in.room_type_id,
+                room_id=room_in.room_id,  # Can remain NULL until check-in
+                rate_plan_id=room_in.rate_plan_id,
+                status=ReservationStatus.CONFIRMED.value,
+                check_in_at=room_in.check_in_at,
+                check_out_at=room_in.check_out_at,
+                adults=room_in.adults,
+                children=room_in.children,
+            )
+            db.add(res_room)
+            await db.flush()
+
+            # Room Occupants (reservation_guests)
+            if room_in.guests:
+                for guest_in in room_in.guests:
+                    occ_guest = await crud_guest.find_or_create(
+                        db,
+                        organization_id=property_obj.organization_id,
+                        guest_data=guest_in,
+                    )
+                    res_guest = ReservationGuest(
+                        reservation_room_id=res_room.id,
+                        guest_id=occ_guest.id,
+                        is_primary=guest_in.is_primary,
+                    )
+                    db.add(res_guest)
+            else:
+                # Default primary occupant is the booker
+                res_guest = ReservationGuest(
+                    reservation_room_id=res_room.id,
+                    guest_id=booker.id,
+                    is_primary=True,
+                )
+                db.add(res_guest)
+
+            # Rate Snapshotting (reservation_room_rates)
+            rate_plan = await db.get(RatePlan, room_in.rate_plan_id)
+            start_date = room_in.check_in_at.date()
+            end_date = room_in.check_out_at.date()
+
+            # Calculate nights or 1 night min if same-day
+            num_nights = max(1, (end_date - start_date).days)
+            for night_idx in range(num_nights):
+                stay_date = start_date + timedelta(days=night_idx)
+
+                # Query active RatePlanRate matching stay_date
+                rate_query = await db.execute(
+                    select(RatePlanRate).where(
+                        RatePlanRate.rate_plan_id == room_in.rate_plan_id,
+                        or_(RatePlanRate.valid_from.is_(None), RatePlanRate.valid_from <= stay_date),
+                        or_(RatePlanRate.valid_to.is_(None), RatePlanRate.valid_to >= stay_date),
+                    ).order_by(RatePlanRate.created_at.desc())
+                )
+                matched_rate = rate_query.scalars().first()
+
+                if not matched_rate:
+                    # Fallback to any active rate under this rate plan
+                    fallback_query = await db.execute(
+                        select(RatePlanRate).where(
+                            RatePlanRate.rate_plan_id == room_in.rate_plan_id
+                        ).order_by(RatePlanRate.created_at.desc())
+                    )
+                    matched_rate = fallback_query.scalars().first()
+
+                if not matched_rate:
+                    raise ValidationException(
+                        f"No rate configured for rate plan '{rate_plan.name if rate_plan else room_in.rate_plan_id}' on {stay_date}."
+                    )
+
+                base_price = matched_rate.price
+                extra_person = Decimal("0.00")
+                discount = Decimal("0.00")
+                net_price = base_price + extra_person - discount
+
+                tax_price = await self._calculate_taxes_for_rate(
+                    db,
+                    tax_group_id=rate_plan.tax_group_id if rate_plan else None,
+                    base_amount=net_price,
+                    stay_date=stay_date,
+                )
+                total_night = net_price + tax_price
+
+                res_room_rate = ReservationRoomRate(
+                    reservation_room_id=res_room.id,
+                    stay_date=stay_date,
+                    rate_plan_rate_id=matched_rate.id,
+                    base_amount=base_price,
+                    extra_person_amount=extra_person,
+                    discount_amount=discount,
+                    net_amount=net_price,
+                    tax_amount=tax_price,
+                    total_amount=total_night,
+                )
+                db.add(res_room_rate)
+
+                res_total_amount += total_night
+                res_total_tax += tax_price
+
+        # Update reservation grand totals
+        reservation.total_amount = res_total_amount
+        reservation.total_tax_amount = res_total_tax
+        await db.flush()
+
+        # 8. Create 1 OPEN Master Folio
+        folio_number = self.generate_folio_number(property_code=property_obj.code)
+        folio = Folio(
+            property_id=property_id,
+            reservation_id=reservation.id,
+            guest_id=booker.id,
+            folio_number=folio_number,
+            folio_type=FolioType.GUEST.value,
+            status=FolioStatus.OPEN.value,
+            currency=reservation.currency,
+            opened_at=datetime.now(timezone.utc),
+        )
+        db.add(folio)
+        await db.flush()
+
+        # 9. Handle Optional Advance Payment & Folio Transaction
+        payment_record = None
+        if res_in.advance_payment:
+            adv = res_in.advance_payment
+            payment_record = Payment(
+                property_id=property_id,
+                folio_id=folio.id,
+                reservation_id=reservation.id,
+                payment_method_id=adv.payment_method_id,
+                payment_type=PaymentType.ADVANCE.value,
+                status=PaymentStatus.CAPTURED.value,
+                amount=adv.amount,
+                currency=reservation.currency,
+                gateway=adv.gateway,
+                gateway_reference=adv.gateway_reference,
+                card_last4=adv.card_last4,
+                notes=adv.notes,
+                received_by=current_user_id,
+                received_at=datetime.now(timezone.utc),
+            )
+            db.add(payment_record)
+            await db.flush()
+
+            # Record Ledger Credit row in folio_transactions
+            business_date = property_obj.business_date or datetime.now(timezone.utc).date()
+            folio_txn = FolioTransaction(
+                property_id=property_id,
+                folio_id=folio.id,
+                business_date=business_date,
+                entry_type=FolioEntryType.CREDIT.value,
+                transaction_type=FolioTransactionType.PAYMENT.value,
+                payment_id=payment_record.id,
+                description=f"Advance payment received via {payment_method.name if payment_method else 'payment method'}",
+                quantity=Decimal("1.00"),
+                unit_price=adv.amount,
+                amount=adv.amount,
+                tax_amount=Decimal("0.00"),
+                total_amount=adv.amount,
+                source=FolioTransactionSource.MANUAL.value,
+                posted_by=current_user_id,
+                posted_at=datetime.now(timezone.utc),
+            )
+            db.add(folio_txn)
+            await db.flush()
+
+        # 10. Record Audit Log
+        audit_log = AuditLog(
+            organization_id=property_obj.organization_id,
+            property_id=property_id,
+            user_id=current_user_id,
+            entity_type="reservations",
+            entity_id=reservation.id,
+            action="CREATE",
+            old_values=None,
+            new_values={
+                "booking_number": reservation.booking_number,
+                "guest_id": booker.id,
+                "status": reservation.status,
+                "rooms_count": len(res_in.rooms),
+                "total_amount": str(reservation.total_amount),
+                "total_tax_amount": str(reservation.total_tax_amount),
+                "advance_payment": str(res_in.advance_payment.amount) if res_in.advance_payment else "0.00",
+                "folio_number": folio.folio_number,
+            },
+        )
+        db.add(audit_log)
+
+        # Commit Entire Atomic Transaction
+        await db.commit()
+
+        # 11. Return Hydrated Response
+        fresh_res = await crud_reservation.get_by_id(db, reservation_id=reservation.id)
+        if not fresh_res:
+            raise ValidationException("Failed to reload created reservation.")
+
+        payments_list = [payment_record] if payment_record else []
+        return ReservationResponse(
+            id=fresh_res.id,
+            property_id=fresh_res.property_id,
+            booking_number=fresh_res.booking_number,
+            guest_id=fresh_res.guest_id,
+            company_id=fresh_res.company_id,
+            booking_type=fresh_res.booking_type,
+            source=fresh_res.source,
+            channel_name=fresh_res.channel_name,
+            channel_booking_ref=fresh_res.channel_booking_ref,
+            status=fresh_res.status,
+            check_in_at=fresh_res.check_in_at,
+            check_out_at=fresh_res.check_out_at,
+            currency=fresh_res.currency,
+            total_amount=fresh_res.total_amount,
+            total_tax_amount=fresh_res.total_tax_amount,
+            special_requests=fresh_res.special_requests,
+            created_at=fresh_res.created_at,
+            updated_at=fresh_res.updated_at,
+            booker=GuestSummaryResponse.model_validate(fresh_res.guest) if fresh_res.guest else None,
+            rooms=fresh_res.rooms,
+            folio=FolioSummaryResponse.model_validate(folio) if folio else None,
+            payments=[PaymentSummaryResponse.model_validate(p) for p in payments_list],
+        )
+
+    async def get_reservation(
+        self,
+        db: AsyncSession,
+        property_id: str,
+        reservation_id: str,
+    ) -> ReservationResponse:
+        """Retrieve a reservation with its rooms, folio, and payments."""
+        reservation = await crud_reservation.get_by_id(
+            db, reservation_id=reservation_id, property_id=property_id
+        )
+        if not reservation:
+            raise EntityNotFoundException("Reservation", reservation_id)
+
+        folio = await crud_reservation.get_reservation_folio(db, reservation_id=reservation.id)
+        payments = await crud_reservation.get_reservation_payments(db, reservation_id=reservation.id)
+
+        return ReservationResponse(
+            id=reservation.id,
+            property_id=reservation.property_id,
+            booking_number=reservation.booking_number,
+            guest_id=reservation.guest_id,
+            company_id=reservation.company_id,
+            booking_type=reservation.booking_type,
+            source=reservation.source,
+            channel_name=reservation.channel_name,
+            channel_booking_ref=reservation.channel_booking_ref,
+            status=reservation.status,
+            check_in_at=reservation.check_in_at,
+            check_out_at=reservation.check_out_at,
+            currency=reservation.currency,
+            total_amount=reservation.total_amount,
+            total_tax_amount=reservation.total_tax_amount,
+            special_requests=reservation.special_requests,
+            created_at=reservation.created_at,
+            updated_at=reservation.updated_at,
+            booker=GuestSummaryResponse.model_validate(reservation.guest) if reservation.guest else None,
+            rooms=reservation.rooms,
+            folio=FolioSummaryResponse.model_validate(folio) if folio else None,
+            payments=[PaymentSummaryResponse.model_validate(p) for p in payments],
+        )
+
+
+reservation_service = ReservationService()
