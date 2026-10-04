@@ -13,11 +13,18 @@ class PMSException(HTTPException):
 
 
 class EntityNotFoundException(PMSException):
-    def __init__(self, entity_name: str, entity_id: Any):
+    def __init__(self, entity_name: str, entity_id: Any = None):
+        if entity_id is not None:
+            detail = f"{entity_name} with identifier '{entity_id}' not found."
+        else:
+            detail = entity_name
         super().__init__(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"{entity_name} with identifier '{entity_id}' not found.",
+            detail=detail,
         )
+
+
+NotFoundException = EntityNotFoundException
 
 
 class TenantMismatchException(PMSException):

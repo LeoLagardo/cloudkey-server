@@ -17,6 +17,7 @@ from app.routes.reservations import router as reservations_router
 from app.routes.inventory import router as inventory_router
 from app.routes.room_blocks import router as room_blocks_router
 from app.routes.payments import router as payments_router
+from app.routes.guests import router as guests_router
 
 api_router = APIRouter()
 
@@ -37,5 +38,6 @@ api_router.include_router(reservations_router)
 api_router.include_router(inventory_router)
 api_router.include_router(room_blocks_router)
 api_router.include_router(payments_router)
+api_router.include_router(guests_router)
 
 __all__ = ["api_router"]
