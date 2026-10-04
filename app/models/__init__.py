@@ -15,7 +15,7 @@ from app.models.user import User
 from app.models.guest import Guest
 from app.models.company import Company
 from app.models.tax import Tax, TaxRate, TaxGroup, TaxGroupItem
-from app.models.service import Service
+from app.models.service import Service, ServiceCategory
 from app.models.reservation import (
     Reservation,
     ReservationRoom,
@@ -57,6 +57,7 @@ __all__ = [
     "TaxGroup",
     "TaxGroupItem",
     "Service",
+    "ServiceCategory",
     "Reservation",
     "ReservationRoom",
     "ReservationGuest",

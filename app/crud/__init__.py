@@ -27,6 +27,12 @@ from app.crud.tax import (
     crud_tax_group_item,
     CRUDTaxGroupItem,
 )
+from app.crud.service import (
+    crud_service,
+    CRUDService,
+    crud_service_category,
+    CRUDServiceCategory,
+)
 
 __all__ = [
     "CRUDBase",
@@ -64,4 +70,8 @@ __all__ = [
     "CRUDTaxGroup",
     "crud_tax_group_item",
     "CRUDTaxGroupItem",
+    "crud_service",
+    "CRUDService",
+    "crud_service_category",
+    "CRUDServiceCategory",
 ]

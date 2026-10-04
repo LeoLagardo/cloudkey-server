@@ -8,7 +8,13 @@ from app.schemas.reservation import (
     ReservationCreate,
     ReservationResponse,
 )
+from app.schemas.folio import (
+    FolioDetailResponse,
+    FolioTransactionResponse,
+    PostServiceChargeRequest,
+)
 from app.services.reservation_service import reservation_service
+from app.services.folio_service import folio_service
 from app.crud.reservation import crud_reservation
 
 router = APIRouter(prefix="/reservations", tags=["Reservations"])
@@ -225,6 +231,39 @@ async def record_reservation_folio_payment(
         reservation_id=reservation_id,
     )
     return await reservation_service.get_reservation(
+        db,
+        property_id=property_id,
+        reservation_id=reservation_id,
+    )
+
+
+@router.post("/{reservation_id}/services", response_model=FolioTransactionResponse, status_code=status.HTTP_201_CREATED)
+async def charge_service_to_reservation_folio(
+    reservation_id: str,
+    payload: PostServiceChargeRequest,
+    property_id: str = Query(..., description="Property ID"),
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Post an incidental/consumed service charge to the reservation's folio."""
+    return await folio_service.post_service_charge(
+        db,
+        property_id=property_id,
+        reservation_id=reservation_id,
+        payload=payload,
+        current_user_id=current_user.id,
+    )
+
+
+@router.get("/{reservation_id}/folio", response_model=FolioDetailResponse)
+async def get_reservation_folio(
+    reservation_id: str,
+    property_id: str = Query(..., description="Property ID"),
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Retrieve full folio ledger breakdown including all transactions and taxes for a reservation."""
+    return await folio_service.get_reservation_folio_details(
         db,
         property_id=property_id,
         reservation_id=reservation_id,
