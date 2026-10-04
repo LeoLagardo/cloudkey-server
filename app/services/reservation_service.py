@@ -3,7 +3,7 @@ import string
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Dict, List, Optional
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, and_, or_, case, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -12,6 +12,7 @@ from app.crud.reservation import crud_reservation
 from app.models.folio import Folio, FolioTransaction, Payment, PaymentMethod
 from app.models.operation import AuditLog
 from app.models.property import Property
+from app.models.property_settings import PropertySettings
 from app.models.rate_plan import RatePlan
 from app.models.rate_plan_rate import RatePlanRate
 from app.models.reservation import (
@@ -29,6 +30,8 @@ from app.schemas.reservation import (
     FolioSummaryResponse,
     PaymentSummaryResponse,
     GuestSummaryResponse,
+    ReservationCheckInRequest,
+    ReservationCheckOutRequest,
 )
 from app.utils.enums import (
     BookingType,
@@ -43,6 +46,7 @@ from app.utils.enums import (
     PaymentStatus,
     PaymentType,
     ReservationStatus,
+    RoomStatus,
     TaxRateType,
 )
 from app.utils.exceptions import EntityNotFoundException, ValidationException
@@ -712,12 +716,17 @@ class ReservationService:
         db: AsyncSession,
         property_id: str,
         reservation_id: str,
+        payload: Optional[ReservationCheckInRequest] = None,
         current_user_id: Optional[str] = None,
     ) -> ReservationResponse:
         """
         Check-in reservation:
-        Status changes to CHECKED_IN.
-        NOTE: No inventory change — room was already counted sold from booking to departure.
+        1. Validate reservation status is CONFIRMED.
+        2. Assign physical room if unassigned (via payload or auto-assign vacant clean room).
+        3. Validate assigned room is not occupied and verify housekeeping status (or allow override).
+        4. Update reservation & room statuses to CHECKED_IN, stamp actual_check_in_at.
+        5. Update physical room occupancy to OCCUPIED.
+        6. Log audit trail.
         """
         reservation = await crud_reservation.get_by_id(db, reservation_id=reservation_id, property_id=property_id)
         if not reservation:
@@ -727,6 +736,84 @@ class ReservationService:
             raise ValidationException(f"Only CONFIRMED reservations can be checked in (current: {reservation.status}).")
 
         now = datetime.now(timezone.utc)
+        property_obj = await db.get(Property, property_id)
+        from app.services.inventory_service import inventory_service
+        business_date = inventory_service.get_business_date(property_obj)
+
+        # 0. Business date vs check-in date verification
+        for r_room in reservation.rooms:
+            res_in_date = r_room.check_in_at.date()
+            if res_in_date > business_date and (payload and not payload.allow_early_checkin):
+                raise ValidationException(
+                    f"Early arrival: reservation is scheduled for {res_in_date}, but hotel business date is {business_date}. "
+                    "Please confirm early check-in to proceed."
+                )
+
+        # 1. Validate / Assign physical rooms
+        for r_room in reservation.rooms:
+            target_room_id = None
+            if payload and payload.room_assignments and r_room.id in payload.room_assignments:
+                target_room_id = payload.room_assignments[r_room.id]
+            elif payload and payload.room_id and len(reservation.rooms) == 1:
+                target_room_id = payload.room_id
+            elif r_room.room_id:
+                target_room_id = r_room.room_id
+
+            if not target_room_id:
+                # Attempt auto-assign a clean vacant room of the booked room type
+                stmt_candidate = (
+                    select(Room)
+                    .where(
+                        Room.property_id == property_id,
+                        Room.room_type_id == r_room.room_type_id,
+                        Room.occupancy_status == OccupancyStatus.VACANT.value,
+                        Room.status == RoomStatus.AVAILABLE.value,
+                    )
+                    .order_by(
+                        case(
+                            (Room.housekeeping_status == HousekeepingStatus.INSPECTED.value, 1),
+                            (Room.housekeeping_status == HousekeepingStatus.CLEAN.value, 2),
+                            else_=3,
+                        ),
+                        Room.room_number.asc(),
+                    )
+                )
+                res_candidate = await db.execute(stmt_candidate)
+                candidate_room = res_candidate.scalars().first()
+                if candidate_room:
+                    target_room_id = candidate_room.id
+                else:
+                    # Check if property has any physical rooms configured for this room type
+                    stmt_any = select(func.count(Room.id)).where(
+                        Room.property_id == property_id,
+                        Room.room_type_id == r_room.room_type_id,
+                    )
+                    total_type_rooms = (await db.execute(stmt_any)).scalar() or 0
+                    if total_type_rooms > 0:
+                        raise ValidationException(
+                            "Cannot check in: all rooms of this type are currently occupied or unavailable. Please assign a room manually."
+                        )
+
+            if target_room_id:
+                room_obj = await db.get(Room, target_room_id)
+                if not room_obj or room_obj.property_id != property_id:
+                    raise ValidationException(f"Invalid room '{target_room_id}' for property.")
+                if room_obj.occupancy_status == OccupancyStatus.OCCUPIED.value and r_room.room_id != target_room_id:
+                    raise ValidationException(f"Room {room_obj.room_number} is already occupied.")
+
+                # Housekeeping dirty override check
+                if (
+                    room_obj.housekeeping_status == HousekeepingStatus.DIRTY.value
+                    and not (payload and payload.allow_dirty_override)
+                ):
+                    raise ValidationException(
+                        f"Room {room_obj.room_number} is currently {room_obj.housekeeping_status}. Clean room required or enable override."
+                    )
+
+                r_room.room_id = target_room_id
+                room_obj.occupancy_status = OccupancyStatus.OCCUPIED.value
+
+        # 2. Update statuses & timestamps
         reservation.status = ReservationStatus.CHECKED_IN.value
         for r_room in reservation.rooms:
             r_room.status = ReservationStatus.CHECKED_IN.value
@@ -736,7 +823,6 @@ class ReservationService:
                 if room_obj:
                     room_obj.occupancy_status = OccupancyStatus.OCCUPIED.value
 
-        property_obj = await db.get(Property, property_id)
         audit_log = AuditLog(
             organization_id=property_obj.organization_id if property_obj else None,
             property_id=property_id,
@@ -745,7 +831,59 @@ class ReservationService:
             entity_id=reservation.id,
             action="CHECK_IN",
             old_values={"status": ReservationStatus.CONFIRMED.value},
-            new_values={"status": ReservationStatus.CHECKED_IN.value},
+            new_values={
+                "status": ReservationStatus.CHECKED_IN.value,
+                "keycards_issued": payload.keycards_issued if payload else 1,
+                "notes": payload.notes if payload else None,
+            },
+        )
+        db.add(audit_log)
+        await db.commit()
+
+        return await self.get_reservation(db, property_id=property_id, reservation_id=reservation_id)
+
+    async def undo_check_in_reservation(
+        self,
+        db: AsyncSession,
+        property_id: str,
+        reservation_id: str,
+        current_user_id: Optional[str] = None,
+    ) -> ReservationResponse:
+        """
+        Undo Check-in:
+        1. Validate reservation status is CHECKED_IN.
+        2. Revert reservation status to CONFIRMED.
+        3. Revert reservation_rooms status to CONFIRMED and clear actual_check_in_at.
+        4. Revert physical room occupancy_status from OCCUPIED to VACANT.
+        5. Log audit trail.
+        """
+        reservation = await crud_reservation.get_by_id(db, reservation_id=reservation_id, property_id=property_id)
+        if not reservation:
+            raise EntityNotFoundException("Reservation", reservation_id)
+
+        if reservation.status != ReservationStatus.CHECKED_IN.value:
+            raise ValidationException(f"Only CHECKED_IN reservations can have check-in undone (current: {reservation.status}).")
+
+        property_obj = await db.get(Property, property_id)
+
+        reservation.status = ReservationStatus.CONFIRMED.value
+        for r_room in reservation.rooms:
+            r_room.status = ReservationStatus.CONFIRMED.value
+            r_room.actual_check_in_at = None
+            if r_room.room_id:
+                room_obj = await db.get(Room, r_room.room_id)
+                if room_obj:
+                    room_obj.occupancy_status = OccupancyStatus.VACANT.value
+
+        audit_log = AuditLog(
+            organization_id=property_obj.organization_id if property_obj else None,
+            property_id=property_id,
+            user_id=current_user_id,
+            entity_type="reservations",
+            entity_id=reservation.id,
+            action="UNDO_CHECK_IN",
+            old_values={"status": ReservationStatus.CHECKED_IN.value},
+            new_values={"status": ReservationStatus.CONFIRMED.value},
         )
         db.add(audit_log)
         await db.commit()
@@ -757,12 +895,18 @@ class ReservationService:
         db: AsyncSession,
         property_id: str,
         reservation_id: str,
+        payload: Optional[ReservationCheckOutRequest] = None,
         current_user_id: Optional[str] = None,
     ) -> ReservationResponse:
         """
         Check-out reservation:
-        Status changes to CHECKED_OUT.
-        NOTE: No inventory change.
+        1. Validate reservation status is CHECKED_IN.
+        2. Handle same-day checkout & room rate posting based on PropertySettings.same_day_checkout_rule.
+        3. Handle settlement payment (if supplied) and verify folio balance.
+        4. Release inventory for remaining future unstayed nights (early departure / same-day).
+        5. Mark physical room VACANT & DIRTY (triggering housekeeping turnover).
+        6. Close master Folio.
+        7. Update reservation status to CHECKED_OUT and record AuditLog.
         """
         reservation = await crud_reservation.get_by_id(db, reservation_id=reservation_id, property_id=property_id)
         if not reservation:
@@ -772,7 +916,129 @@ class ReservationService:
             raise ValidationException(f"Only CHECKED_IN reservations can be checked out (current: {reservation.status}).")
 
         now = datetime.now(timezone.utc)
-        reservation.status = ReservationStatus.CHECKED_OUT.value
+        property_obj = await db.get(Property, property_id)
+        from app.services.inventory_service import inventory_service
+        business_date = inventory_service.get_business_date(property_obj)
+
+        stmt_settings = select(PropertySettings).where(PropertySettings.property_id == property_id)
+        settings_res = await db.execute(stmt_settings)
+        prop_settings = settings_res.scalar_one_or_none()
+
+        # 1. Fetch Folio and check if stay charges / room rate need posting
+        stmt_folio = select(Folio).where(Folio.reservation_id == reservation.id)
+        res_folio = await db.execute(stmt_folio)
+        folio = res_folio.scalar_one_or_none()
+
+        if folio:
+            stmt_txns = select(FolioTransaction).where(FolioTransaction.folio_id == folio.id)
+            existing_txns = list((await db.execute(stmt_txns)).scalars().all())
+            has_room_charge = any(t.transaction_type == FolioTransactionType.ROOM_CHARGE.value for t in existing_txns)
+
+            # Same-day stay detection
+            is_same_day = False
+            for r_room in reservation.rooms:
+                in_date = (r_room.actual_check_in_at.date() if r_room.actual_check_in_at else r_room.check_in_at.date())
+                if in_date == now.date():
+                    is_same_day = True
+                    break
+
+            if not has_room_charge:
+                # Apply same-day checkout rule or standard stay charge
+                charge_rule = (
+                    payload.same_day_charge_type
+                    if payload and payload.same_day_charge_type
+                    else (prop_settings.same_day_checkout_rule if (prop_settings and is_same_day) else "FULL_NIGHT")
+                )
+
+                charge_amount = Decimal("0.00")
+                total_stay = reservation.total_amount or Decimal("0.00")
+                if charge_rule == "WAIVED":
+                    charge_amount = Decimal("0.00")
+                elif charge_rule in ("DAY_USE", "PARTIAL"):
+                    charge_amount = (total_stay * Decimal("0.50")).quantize(Decimal("0.01"))
+                else:  # FULL_NIGHT
+                    charge_amount = total_stay
+
+                if charge_amount > Decimal("0.00"):
+                    room_charge_txn = FolioTransaction(
+                        property_id=property_id,
+                        folio_id=folio.id,
+                        business_date=business_date,
+                        entry_type=FolioEntryType.DEBIT.value,
+                        transaction_type=FolioTransactionType.ROOM_CHARGE.value,
+                        description=f"Stay room charge ({charge_rule})",
+                        quantity=Decimal("1.00"),
+                        unit_price=charge_amount,
+                        amount=charge_amount,
+                        tax_amount=Decimal("0.00"),
+                        total_amount=charge_amount,
+                        source=FolioTransactionSource.SYSTEM.value,
+                        posted_by=current_user_id,
+                        posted_at=now,
+                    )
+                    db.add(room_charge_txn)
+                    await db.flush()
+
+            # 2. Process Settlement Payment if provided
+            if payload and payload.settlement_payment and payload.settlement_payment.amount > Decimal("0.00"):
+                from app.services.payment_service import payment_service
+                from app.schemas.payment import PaymentCreateInput
+
+                p_in = PaymentCreateInput(
+                    amount=payload.settlement_payment.amount,
+                    payment_method=payload.settlement_payment.payment_method or "CASH",
+                    payment_type="SETTLEMENT",
+                    status="COMPLETED",
+                    currency=reservation.currency,
+                    gateway_reference=payload.settlement_payment.reference,
+                    notes=payload.settlement_payment.notes,
+                    reservation_id=reservation.id,
+                )
+                await payment_service.record_payment(
+                    db,
+                    property_id=property_id,
+                    payload=p_in,
+                    current_user_id=current_user_id,
+                    reservation_id=reservation.id,
+                )
+
+            # 3. Calculate Folio Balance
+            stmt_txns_after = select(FolioTransaction).where(FolioTransaction.folio_id == folio.id)
+            updated_txns = list((await db.execute(stmt_txns_after)).scalars().all())
+            debits = sum((t.total_amount for t in updated_txns if t.entry_type == FolioEntryType.DEBIT.value), Decimal("0.00"))
+            credits = sum((t.total_amount for t in updated_txns if t.entry_type == FolioEntryType.CREDIT.value), Decimal("0.00"))
+            if debits == Decimal("0.00") and reservation.total_amount:
+                debits = reservation.total_amount
+            balance_due = max(Decimal("0.00"), debits - credits)
+
+            if balance_due > Decimal("0.00") and not (payload and payload.allow_unpaid_override):
+                raise ValidationException(
+                    f"Cannot complete check-out: outstanding balance of {reservation.currency} {balance_due:.2f} remains on folio. "
+                    "Please settle payment or enable manager override."
+                )
+
+        # 4. Release inventory for remaining future unstayed nights (early departure / same-day)
+        room_releases: Dict[str, List[date]] = {}
+        for r_room in reservation.rooms:
+            booked_end_d = r_room.check_out_at.date()
+            from_release_date = max(business_date, now.date())
+            stay_dates = []
+            d = from_release_date
+            while d < booked_end_d:
+                stay_dates.append(d)
+                d += timedelta(days=1)
+
+            if stay_dates:
+                if r_room.room_type_id not in room_releases:
+                    room_releases[r_room.room_type_id] = []
+                room_releases[r_room.room_type_id].extend(stay_dates)
+
+        if room_releases:
+            await inventory_service.release_inventory(
+                db, property_id=property_id, room_releases=room_releases, from_date=business_date
+            )
+
+        # 5. Transition Physical Room & Reservation State
         for r_room in reservation.rooms:
             r_room.status = ReservationStatus.CHECKED_OUT.value
             r_room.actual_check_out_at = now
@@ -782,7 +1048,12 @@ class ReservationService:
                     room_obj.occupancy_status = OccupancyStatus.VACANT.value
                     room_obj.housekeeping_status = HousekeepingStatus.DIRTY.value
 
-        property_obj = await db.get(Property, property_id)
+        reservation.status = ReservationStatus.CHECKED_OUT.value
+        if folio:
+            folio.status = FolioStatus.CLOSED.value
+            folio.closed_at = now
+
+        # 6. Audit Trail
         audit_log = AuditLog(
             organization_id=property_obj.organization_id if property_obj else None,
             property_id=property_id,
@@ -791,7 +1062,10 @@ class ReservationService:
             entity_id=reservation.id,
             action="CHECK_OUT",
             old_values={"status": ReservationStatus.CHECKED_IN.value},
-            new_values={"status": ReservationStatus.CHECKED_OUT.value},
+            new_values={
+                "status": ReservationStatus.CHECKED_OUT.value,
+                "override_reason": payload.override_reason if payload else None,
+            },
         )
         db.add(audit_log)
         await db.commit()

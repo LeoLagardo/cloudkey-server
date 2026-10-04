@@ -108,6 +108,9 @@ from app.schemas.reservation import (
     ReservationGuestResponse,
     FolioSummaryResponse,
     PaymentSummaryResponse,
+    ReservationCheckInRequest,
+    ReservationCheckOutRequest,
+    ReservationCheckOutPaymentRequest,
 )
 from app.schemas.service import (
     ServiceBase,

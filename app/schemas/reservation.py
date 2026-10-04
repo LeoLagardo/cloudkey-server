@@ -1,7 +1,7 @@
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from typing import List, Optional
+from typing import Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.utils.enums import (
@@ -203,3 +203,28 @@ class ReservationResponse(BaseModel):
     rooms: List[ReservationRoomResponse] = []
     folio: Optional[FolioSummaryResponse] = None
     payments: List[PaymentSummaryResponse] = []
+
+
+class ReservationCheckInRequest(BaseModel):
+    room_id: Optional[str] = None
+    room_assignments: Optional[Dict[str, str]] = None  # {reservation_room_id: room_id}
+    allow_dirty_override: bool = False
+    allow_early_checkin: bool = False
+    keycards_issued: Optional[int] = 1
+    verified_id_type: Optional[str] = None
+    verified_id_number: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class ReservationCheckOutPaymentRequest(BaseModel):
+    payment_method: str = "CASH"
+    amount: Decimal
+    reference: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class ReservationCheckOutRequest(BaseModel):
+    settlement_payment: Optional[ReservationCheckOutPaymentRequest] = None
+    allow_unpaid_override: bool = False
+    override_reason: Optional[str] = None
+    same_day_charge_type: Optional[str] = None

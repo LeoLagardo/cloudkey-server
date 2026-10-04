@@ -7,6 +7,8 @@ from app.dependencies.auth import get_current_user, AuthenticatedUser
 from app.schemas.reservation import (
     ReservationCreate,
     ReservationResponse,
+    ReservationCheckInRequest,
+    ReservationCheckOutRequest,
 )
 from app.schemas.folio import (
     FolioDetailResponse,
@@ -169,12 +171,30 @@ async def no_show_reservation(
 @router.post("/{reservation_id}/check-in", response_model=ReservationResponse)
 async def check_in_reservation(
     reservation_id: str,
+    payload: Optional[ReservationCheckInRequest] = None,
     property_id: str = Query(..., description="Property ID"),
     db: AsyncSession = Depends(get_db),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
-    """Check-in reservation (no inventory change, room remains sold)."""
+    """Check-in reservation (assign physical room if needed, occupy room, stamp check-in)."""
     return await reservation_service.check_in_reservation(
+        db,
+        property_id=property_id,
+        reservation_id=reservation_id,
+        payload=payload,
+        current_user_id=current_user.id,
+    )
+
+
+@router.post("/{reservation_id}/undo-check-in", response_model=ReservationResponse)
+async def undo_check_in_reservation(
+    reservation_id: str,
+    property_id: str = Query(..., description="Property ID"),
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Undo check-in: reverts reservation and rooms back to CONFIRMED, clears check-in stamp, marks room VACANT."""
+    return await reservation_service.undo_check_in_reservation(
         db,
         property_id=property_id,
         reservation_id=reservation_id,
@@ -185,15 +205,17 @@ async def check_in_reservation(
 @router.post("/{reservation_id}/check-out", response_model=ReservationResponse)
 async def check_out_reservation(
     reservation_id: str,
+    payload: Optional[ReservationCheckOutRequest] = None,
     property_id: str = Query(..., description="Property ID"),
     db: AsyncSession = Depends(get_db),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ):
-    """Check-out reservation."""
+    """Check-out reservation with folio settlement, room turnover, and same-day / early departure handling."""
     return await reservation_service.check_out_reservation(
         db,
         property_id=property_id,
         reservation_id=reservation_id,
+        payload=payload,
         current_user_id=current_user.id,
     )
 
