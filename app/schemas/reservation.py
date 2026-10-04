@@ -92,6 +92,17 @@ class GuestSummaryResponse(BaseModel):
     last_name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
+    id_type: Optional[str] = None
+    id_number: Optional[str] = None
+    nationality: Optional[str] = None
+    address_line_1: Optional[str] = None
+    address_line_2: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    country: Optional[str] = None
+    postal_code: Optional[str] = None
+    gstin: Optional[str] = None
+    notes: Optional[str] = None
 
 
 class ReservationRoomRateResponse(BaseModel):
@@ -128,8 +139,13 @@ class ReservationRoomResponse(BaseModel):
     status: str
     check_in_at: datetime
     check_out_at: datetime
+    actual_check_in_at: Optional[datetime] = None
+    actual_check_out_at: Optional[datetime] = None
     adults: int
     children: int
+    room_number: Optional[str] = None
+    room_type_name: Optional[str] = None
+    rate_plan_name: Optional[str] = None
     guests: List[ReservationGuestResponse] = []
     room_rates: List[ReservationRoomRateResponse] = []
 
@@ -179,6 +195,8 @@ class ReservationResponse(BaseModel):
     total_amount: Optional[Decimal] = None
     total_tax_amount: Optional[Decimal] = None
     special_requests: Optional[str] = None
+    cancelled_at: Optional[datetime] = None
+    cancellation_reason: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     booker: Optional[GuestSummaryResponse] = None

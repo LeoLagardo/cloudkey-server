@@ -1,5 +1,5 @@
 from typing import List, Optional
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -22,9 +22,12 @@ class CRUDReservation:
         """Fetch reservation with fully loaded relations."""
         query = (
             select(Reservation)
-            .where(Reservation.id == reservation_id)
+            .where(or_(Reservation.id == reservation_id, Reservation.booking_number == reservation_id))
             .options(
                 selectinload(Reservation.guest),
+                selectinload(Reservation.rooms).selectinload(ReservationRoom.room),
+                selectinload(Reservation.rooms).selectinload(ReservationRoom.room_type),
+                selectinload(Reservation.rooms).selectinload(ReservationRoom.rate_plan),
                 selectinload(Reservation.rooms).selectinload(ReservationRoom.room_rates),
                 selectinload(Reservation.rooms).selectinload(ReservationRoom.guests).selectinload(ReservationGuest.guest),
             )
@@ -64,6 +67,9 @@ class CRUDReservation:
             .where(Reservation.property_id == property_id)
             .options(
                 selectinload(Reservation.guest),
+                selectinload(Reservation.rooms).selectinload(ReservationRoom.room),
+                selectinload(Reservation.rooms).selectinload(ReservationRoom.room_type),
+                selectinload(Reservation.rooms).selectinload(ReservationRoom.rate_plan),
                 selectinload(Reservation.rooms).selectinload(ReservationRoom.room_rates),
                 selectinload(Reservation.rooms).selectinload(ReservationRoom.guests).selectinload(ReservationGuest.guest),
             )

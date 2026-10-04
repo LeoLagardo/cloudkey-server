@@ -77,6 +77,8 @@ async def list_reservations(
                 total_tax_amount=r.total_tax_amount,
                 special_requests=r.special_requests,
                 created_at=r.created_at,
+                cancelled_at=r.cancelled_at,
+                cancellation_reason=r.cancellation_reason,
                 updated_at=r.updated_at,
                 booker=r.guest,
                 rooms=r.rooms,
@@ -99,6 +101,26 @@ async def get_reservation(
         db,
         property_id=property_id or "",
         reservation_id=reservation_id,
+    )
+
+
+@router.post("/{reservation_id}/rooms/{room_reservation_id}/assign", response_model=ReservationResponse)
+async def assign_room(
+    reservation_id: str,
+    room_reservation_id: str,
+    room_id: str = Query(..., description="Physical Room ID to assign"),
+    property_id: str = Query(..., description="Property ID"),
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Assign physical room number to reservation room."""
+    return await reservation_service.assign_room(
+        db,
+        property_id=property_id,
+        reservation_id=reservation_id,
+        reservation_room_id=room_reservation_id,
+        room_id=room_id,
+        current_user_id=current_user.id,
     )
 
 
@@ -168,4 +190,44 @@ async def check_out_reservation(
         reservation_id=reservation_id,
         current_user_id=current_user.id,
     )
+
+
+@router.post("/{reservation_id}/payments", response_model=ReservationResponse)
+async def record_reservation_folio_payment(
+    reservation_id: str,
+    payload: dict,
+    property_id: str = Query(..., description="Property ID"),
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Record a folio payment directly on a reservation and return refreshed reservation state."""
+    from app.services.payment_service import payment_service
+    from app.schemas.payment import PaymentCreateInput
+    from decimal import Decimal
+
+    payment_in = PaymentCreateInput(
+        amount=Decimal(str(payload.get("amount", 0))),
+        payment_method=payload.get("payment_method") or payload.get("payment_method_id", "CREDIT_CARD"),
+        payment_type=payload.get("payment_type", "SETTLEMENT"),
+        status=payload.get("status", "COMPLETED"),
+        currency=payload.get("currency"),
+        gateway=payload.get("gateway"),
+        gateway_reference=payload.get("reference") or payload.get("gateway_reference"),
+        card_last4=payload.get("card_last4"),
+        notes=payload.get("notes"),
+        reservation_id=reservation_id,
+    )
+    await payment_service.record_payment(
+        db,
+        property_id=property_id,
+        payload=payment_in,
+        current_user_id=current_user.id,
+        reservation_id=reservation_id,
+    )
+    return await reservation_service.get_reservation(
+        db,
+        property_id=property_id,
+        reservation_id=reservation_id,
+    )
+
 

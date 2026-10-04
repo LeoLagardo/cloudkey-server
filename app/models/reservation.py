@@ -204,6 +204,18 @@ class ReservationRoom(Base):
         cascade="all, delete-orphan",
     )
 
+    @property
+    def room_number(self) -> Optional[str]:
+        return self.room.room_number if self.room else None
+
+    @property
+    def room_type_name(self) -> Optional[str]:
+        return self.room_type.name if self.room_type else None
+
+    @property
+    def rate_plan_name(self) -> Optional[str]:
+        return self.rate_plan.name if self.rate_plan else None
+
 
 class ReservationGuest(Base):
     __tablename__ = "reservation_guests"

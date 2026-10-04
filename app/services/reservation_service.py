@@ -38,6 +38,8 @@ from app.utils.enums import (
     FolioTransactionSource,
     FolioTransactionType,
     FolioType,
+    HousekeepingStatus,
+    OccupancyStatus,
     PaymentStatus,
     PaymentType,
     ReservationStatus,
@@ -517,11 +519,67 @@ class ReservationService:
             special_requests=reservation.special_requests,
             created_at=reservation.created_at,
             updated_at=reservation.updated_at,
+            cancelled_at=reservation.cancelled_at,
+            cancellation_reason=reservation.cancellation_reason,
             booker=GuestSummaryResponse.model_validate(reservation.guest) if reservation.guest else None,
             rooms=reservation.rooms,
             folio=FolioSummaryResponse.model_validate(folio) if folio else None,
             payments=[PaymentSummaryResponse.model_validate(p) for p in payments],
         )
+
+    async def assign_room(
+        self,
+        db: AsyncSession,
+        property_id: str,
+        reservation_id: str,
+        reservation_room_id: str,
+        room_id: str,
+        current_user_id: Optional[str] = None,
+    ) -> ReservationResponse:
+        """Assign or reassign a physical room to a reservation room."""
+        reservation = await crud_reservation.get_by_id(db, reservation_id=reservation_id, property_id=property_id)
+        if not reservation:
+            raise EntityNotFoundException("Reservation", reservation_id)
+
+        target_room = None
+        for r in reservation.rooms:
+            if r.id == reservation_room_id:
+                target_room = r
+                break
+        if not target_room:
+            raise EntityNotFoundException("ReservationRoom", reservation_room_id)
+
+        room = await db.get(Room, room_id)
+        if not room or room.property_id != property_id:
+            raise EntityNotFoundException("Room", room_id)
+
+        old_room_id = target_room.room_id
+        target_room.room_id = room.id
+
+        # If reservation is already in-house (CHECKED_IN), update physical room occupancy
+        if reservation.status == ReservationStatus.CHECKED_IN.value:
+            if old_room_id:
+                old_room = await db.get(Room, old_room_id)
+                if old_room:
+                    old_room.occupancy_status = OccupancyStatus.VACANT.value
+                    old_room.housekeeping_status = HousekeepingStatus.DIRTY.value
+            room.occupancy_status = OccupancyStatus.OCCUPIED.value
+
+        property_obj = await db.get(Property, property_id)
+        audit_log = AuditLog(
+            organization_id=property_obj.organization_id if property_obj else None,
+            property_id=property_id,
+            user_id=current_user_id,
+            entity_type="reservations",
+            entity_id=reservation.id,
+            action="ROOM_ASSIGNMENT",
+            old_values={"room_id": old_room_id},
+            new_values={"room_id": room.id, "room_number": room.room_number},
+        )
+        db.add(audit_log)
+        await db.commit()
+
+        return await self.get_reservation(db, property_id=property_id, reservation_id=reservation_id)
 
     async def cancel_reservation(
         self,
@@ -673,6 +731,10 @@ class ReservationService:
         for r_room in reservation.rooms:
             r_room.status = ReservationStatus.CHECKED_IN.value
             r_room.actual_check_in_at = now
+            if r_room.room_id:
+                room_obj = await db.get(Room, r_room.room_id)
+                if room_obj:
+                    room_obj.occupancy_status = OccupancyStatus.OCCUPIED.value
 
         property_obj = await db.get(Property, property_id)
         audit_log = AuditLog(
@@ -714,6 +776,11 @@ class ReservationService:
         for r_room in reservation.rooms:
             r_room.status = ReservationStatus.CHECKED_OUT.value
             r_room.actual_check_out_at = now
+            if r_room.room_id:
+                room_obj = await db.get(Room, r_room.room_id)
+                if room_obj:
+                    room_obj.occupancy_status = OccupancyStatus.VACANT.value
+                    room_obj.housekeeping_status = HousekeepingStatus.DIRTY.value
 
         property_obj = await db.get(Property, property_id)
         audit_log = AuditLog(

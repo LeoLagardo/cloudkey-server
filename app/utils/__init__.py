@@ -10,6 +10,7 @@ from .enums import (
 from .exceptions import (
     PMSException,
     EntityNotFoundException,
+    NotFoundException,
     TenantMismatchException,
     DuplicateEntityException,
     ValidationException,
@@ -25,6 +26,7 @@ __all__ = [
     "UserMembershipStatus",
     "PMSException",
     "EntityNotFoundException",
+    "NotFoundException",
     "TenantMismatchException",
     "DuplicateEntityException",
     "ValidationException",
