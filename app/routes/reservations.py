@@ -100,3 +100,72 @@ async def get_reservation(
         property_id=property_id or "",
         reservation_id=reservation_id,
     )
+
+
+@router.post("/{reservation_id}/cancel", response_model=ReservationResponse)
+async def cancel_reservation(
+    reservation_id: str,
+    property_id: str = Query(..., description="Property ID"),
+    reason: Optional[str] = Query(None, description="Cancellation reason"),
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Cancel a reservation and release inventory for remaining future nights."""
+    return await reservation_service.cancel_reservation(
+        db,
+        property_id=property_id,
+        reservation_id=reservation_id,
+        reason=reason,
+        current_user_id=current_user.id,
+    )
+
+
+@router.post("/{reservation_id}/no-show", response_model=ReservationResponse)
+async def no_show_reservation(
+    reservation_id: str,
+    property_id: str = Query(..., description="Property ID"),
+    reason: Optional[str] = Query(None, description="No-show reason"),
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Mark a confirmed reservation as NO_SHOW and release inventory."""
+    return await reservation_service.no_show_reservation(
+        db,
+        property_id=property_id,
+        reservation_id=reservation_id,
+        reason=reason,
+        current_user_id=current_user.id,
+    )
+
+
+@router.post("/{reservation_id}/check-in", response_model=ReservationResponse)
+async def check_in_reservation(
+    reservation_id: str,
+    property_id: str = Query(..., description="Property ID"),
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Check-in reservation (no inventory change, room remains sold)."""
+    return await reservation_service.check_in_reservation(
+        db,
+        property_id=property_id,
+        reservation_id=reservation_id,
+        current_user_id=current_user.id,
+    )
+
+
+@router.post("/{reservation_id}/check-out", response_model=ReservationResponse)
+async def check_out_reservation(
+    reservation_id: str,
+    property_id: str = Query(..., description="Property ID"),
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Check-out reservation."""
+    return await reservation_service.check_out_reservation(
+        db,
+        property_id=property_id,
+        reservation_id=reservation_id,
+        current_user_id=current_user.id,
+    )
+

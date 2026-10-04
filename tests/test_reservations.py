@@ -58,6 +58,13 @@ async def test_create_reservation_full_flow(async_client: AsyncClient, db_sessio
     )
     assert rate_res.status_code == 201
 
+    # Create physical room for the room type
+    room_res = await async_client.post(
+        f"/api/v1/rooms?property_id={prop_id}",
+        json={"room_number": "101", "room_type_id": rt_id},
+    )
+    assert room_res.status_code == 201
+
     # 3. Create a Payment Method in the database
     pm = PaymentMethod(
         property_id=prop_id,
@@ -193,6 +200,12 @@ async def test_create_reservation_without_advance_payment(async_client: AsyncCli
         f"/api/v1/rate-plans/{rp_id}/rates",
         json={"duration": 1, "duration_unit": "NIGHT", "price": "4000.00"},
     )
+
+    room_res = await async_client.post(
+        f"/api/v1/rooms?property_id={prop_id}",
+        json={"room_number": "201", "room_type_id": rt_id},
+    )
+    assert room_res.status_code == 201
 
     now = datetime.now(timezone.utc)
     check_in = now + timedelta(days=2)

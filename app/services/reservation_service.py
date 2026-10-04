@@ -2,7 +2,7 @@ import secrets
 import string
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import List, Optional
+from typing import Dict, List, Optional
 from sqlalchemy import select, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -187,10 +187,45 @@ class ReservationService:
                 if not room_obj or room_obj.property_id != property_id or room_obj.room_type_id != room_in.room_type_id:
                     raise ValidationException(f"Room '{room_in.room_id}' is invalid or does not match room type.")
 
-        # 4. Generate Unique Booking Number with Hotel Code Prefix
+        # 4. Hot-Path Inventory Allocation & Lock
+        room_demands: Dict[str, List[date]] = {}
+        for room_in in res_in.rooms:
+            start_d = room_in.check_in_at.date()
+            end_d = room_in.check_out_at.date()
+            num_nights = max(1, (end_d - start_d).days)
+            stay_dates = [start_d + timedelta(days=i) for i in range(num_nights)]
+
+            if room_in.room_type_id not in room_demands:
+                room_demands[room_in.room_type_id] = []
+            room_demands[room_in.room_type_id].extend(stay_dates)
+
+            # Slower fallback/audit check on physical room overlap if room_id is specified
+            if room_in.room_id:
+                overlap_res = await db.execute(
+                    select(ReservationRoom.id).where(
+                        ReservationRoom.room_id == room_in.room_id,
+                        ReservationRoom.status.in_([
+                            ReservationStatus.CONFIRMED.value,
+                            ReservationStatus.CHECKED_IN.value,
+                        ]),
+                        ReservationRoom.check_in_at < room_in.check_out_at,
+                        ReservationRoom.check_out_at > room_in.check_in_at,
+                    )
+                )
+                if overlap_res.scalar_one_or_none():
+                    raise ValidationException(
+                        f"Room '{room_in.room_id}' has an existing overlapping reservation."
+                    )
+
+        from app.services.inventory_service import inventory_service
+        await inventory_service.lock_and_reserve(
+            db, property_id=property_id, room_demands=room_demands
+        )
+
+        # 5. Generate Unique Booking Number with Hotel Code Prefix
         booking_number = await self.generate_booking_number(db, property_code=property_obj.code)
 
-        # 5. Find or Create Booker in `guests` (scoped to organization)
+        # 6. Find or Create Booker in `guests` (scoped to organization)
         booker = await crud_guest.find_or_create(
             db,
             organization_id=property_obj.organization_id,
@@ -201,7 +236,7 @@ class ReservationService:
         res_check_in = min(r.check_in_at for r in res_in.rooms)
         res_check_out = max(r.check_out_at for r in res_in.rooms)
 
-        # 6. Initialize Reservation Model
+        # 7. Initialize Reservation Model
         reservation = Reservation(
             property_id=property_id,
             booking_number=booking_number,
@@ -488,5 +523,214 @@ class ReservationService:
             payments=[PaymentSummaryResponse.model_validate(p) for p in payments],
         )
 
+    async def cancel_reservation(
+        self,
+        db: AsyncSession,
+        property_id: str,
+        reservation_id: str,
+        reason: Optional[str] = None,
+        current_user_id: Optional[str] = None,
+    ) -> ReservationResponse:
+        """
+        Cancel reservation:
+        1. Set status to CANCELLED and stamp cancelled_at / reason.
+        2. Release inventory: decrement sold_rooms for remaining future nights.
+        3. Log audit event.
+        """
+        reservation = await crud_reservation.get_by_id(db, reservation_id=reservation_id, property_id=property_id)
+        if not reservation:
+            raise EntityNotFoundException("Reservation", reservation_id)
+
+        if reservation.status == ReservationStatus.CANCELLED.value:
+            raise ValidationException("Reservation is already cancelled.")
+        if reservation.status == ReservationStatus.CHECKED_OUT.value:
+            raise ValidationException("Checked-out reservation cannot be cancelled.")
+
+        property_obj = await db.get(Property, property_id)
+        from app.services.inventory_service import inventory_service
+        business_date = inventory_service.get_business_date(property_obj)
+
+        reservation.status = ReservationStatus.CANCELLED.value
+        reservation.cancelled_at = datetime.now(timezone.utc)
+        reservation.cancellation_reason = reason
+
+        room_releases: Dict[str, List[date]] = {}
+        for r_room in reservation.rooms:
+            r_room.status = ReservationStatus.CANCELLED.value
+            start_d = r_room.check_in_at.date()
+            end_d = r_room.check_out_at.date()
+            num_nights = max(1, (end_d - start_d).days)
+            stay_dates = [start_d + timedelta(days=i) for i in range(num_nights)]
+
+            if r_room.room_type_id not in room_releases:
+                room_releases[r_room.room_type_id] = []
+            room_releases[r_room.room_type_id].extend(stay_dates)
+
+        # Decrement sold_rooms for remaining future nights
+        await inventory_service.release_inventory(
+            db, property_id=property_id, room_releases=room_releases, from_date=business_date
+        )
+
+        audit_log = AuditLog(
+            organization_id=property_obj.organization_id if property_obj else None,
+            property_id=property_id,
+            user_id=current_user_id,
+            entity_type="reservations",
+            entity_id=reservation.id,
+            action="CANCEL",
+            old_values={"status": reservation.status},
+            new_values={
+                "status": ReservationStatus.CANCELLED.value,
+                "cancellation_reason": reason,
+                "cancelled_at": reservation.cancelled_at.isoformat(),
+            },
+        )
+        db.add(audit_log)
+        await db.commit()
+
+        return await self.get_reservation(db, property_id=property_id, reservation_id=reservation_id)
+
+    async def no_show_reservation(
+        self,
+        db: AsyncSession,
+        property_id: str,
+        reservation_id: str,
+        reason: Optional[str] = None,
+        current_user_id: Optional[str] = None,
+    ) -> ReservationResponse:
+        """
+        Mark reservation as NO_SHOW:
+        1. Set status to NO_SHOW.
+        2. Decrement sold_rooms for remaining future nights.
+        3. Log audit event.
+        """
+        reservation = await crud_reservation.get_by_id(db, reservation_id=reservation_id, property_id=property_id)
+        if not reservation:
+            raise EntityNotFoundException("Reservation", reservation_id)
+
+        if reservation.status != ReservationStatus.CONFIRMED.value:
+            raise ValidationException(f"Only CONFIRMED reservations can be marked NO_SHOW (current: {reservation.status}).")
+
+        property_obj = await db.get(Property, property_id)
+        from app.services.inventory_service import inventory_service
+        business_date = inventory_service.get_business_date(property_obj)
+
+        reservation.status = ReservationStatus.NO_SHOW.value
+
+        room_releases: Dict[str, List[date]] = {}
+        for r_room in reservation.rooms:
+            r_room.status = ReservationStatus.NO_SHOW.value
+            start_d = r_room.check_in_at.date()
+            end_d = r_room.check_out_at.date()
+            num_nights = max(1, (end_d - start_d).days)
+            stay_dates = [start_d + timedelta(days=i) for i in range(num_nights)]
+
+            if r_room.room_type_id not in room_releases:
+                room_releases[r_room.room_type_id] = []
+            room_releases[r_room.room_type_id].extend(stay_dates)
+
+        # Decrement sold_rooms for remaining future nights
+        await inventory_service.release_inventory(
+            db, property_id=property_id, room_releases=room_releases, from_date=business_date
+        )
+
+        audit_log = AuditLog(
+            organization_id=property_obj.organization_id if property_obj else None,
+            property_id=property_id,
+            user_id=current_user_id,
+            entity_type="reservations",
+            entity_id=reservation.id,
+            action="NO_SHOW",
+            old_values={"status": ReservationStatus.CONFIRMED.value},
+            new_values={"status": ReservationStatus.NO_SHOW.value, "reason": reason},
+        )
+        db.add(audit_log)
+        await db.commit()
+
+        return await self.get_reservation(db, property_id=property_id, reservation_id=reservation_id)
+
+    async def check_in_reservation(
+        self,
+        db: AsyncSession,
+        property_id: str,
+        reservation_id: str,
+        current_user_id: Optional[str] = None,
+    ) -> ReservationResponse:
+        """
+        Check-in reservation:
+        Status changes to CHECKED_IN.
+        NOTE: No inventory change — room was already counted sold from booking to departure.
+        """
+        reservation = await crud_reservation.get_by_id(db, reservation_id=reservation_id, property_id=property_id)
+        if not reservation:
+            raise EntityNotFoundException("Reservation", reservation_id)
+
+        if reservation.status != ReservationStatus.CONFIRMED.value:
+            raise ValidationException(f"Only CONFIRMED reservations can be checked in (current: {reservation.status}).")
+
+        now = datetime.now(timezone.utc)
+        reservation.status = ReservationStatus.CHECKED_IN.value
+        for r_room in reservation.rooms:
+            r_room.status = ReservationStatus.CHECKED_IN.value
+            r_room.actual_check_in_at = now
+
+        property_obj = await db.get(Property, property_id)
+        audit_log = AuditLog(
+            organization_id=property_obj.organization_id if property_obj else None,
+            property_id=property_id,
+            user_id=current_user_id,
+            entity_type="reservations",
+            entity_id=reservation.id,
+            action="CHECK_IN",
+            old_values={"status": ReservationStatus.CONFIRMED.value},
+            new_values={"status": ReservationStatus.CHECKED_IN.value},
+        )
+        db.add(audit_log)
+        await db.commit()
+
+        return await self.get_reservation(db, property_id=property_id, reservation_id=reservation_id)
+
+    async def check_out_reservation(
+        self,
+        db: AsyncSession,
+        property_id: str,
+        reservation_id: str,
+        current_user_id: Optional[str] = None,
+    ) -> ReservationResponse:
+        """
+        Check-out reservation:
+        Status changes to CHECKED_OUT.
+        NOTE: No inventory change.
+        """
+        reservation = await crud_reservation.get_by_id(db, reservation_id=reservation_id, property_id=property_id)
+        if not reservation:
+            raise EntityNotFoundException("Reservation", reservation_id)
+
+        if reservation.status != ReservationStatus.CHECKED_IN.value:
+            raise ValidationException(f"Only CHECKED_IN reservations can be checked out (current: {reservation.status}).")
+
+        now = datetime.now(timezone.utc)
+        reservation.status = ReservationStatus.CHECKED_OUT.value
+        for r_room in reservation.rooms:
+            r_room.status = ReservationStatus.CHECKED_OUT.value
+            r_room.actual_check_out_at = now
+
+        property_obj = await db.get(Property, property_id)
+        audit_log = AuditLog(
+            organization_id=property_obj.organization_id if property_obj else None,
+            property_id=property_id,
+            user_id=current_user_id,
+            entity_type="reservations",
+            entity_id=reservation.id,
+            action="CHECK_OUT",
+            old_values={"status": ReservationStatus.CHECKED_IN.value},
+            new_values={"status": ReservationStatus.CHECKED_OUT.value},
+        )
+        db.add(audit_log)
+        await db.commit()
+
+        return await self.get_reservation(db, property_id=property_id, reservation_id=reservation_id)
+
 
 reservation_service = ReservationService()
+

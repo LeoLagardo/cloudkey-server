@@ -47,12 +47,18 @@ class RoomService:
 
         data = room_in.model_dump(exclude_unset=True)
         data["property_id"] = property_id
-        return await crud_room.create(db, obj_in=data)
+        created_room = await crud_room.create(db, obj_in=data)
+
+        from app.services.inventory_service import inventory_service
+        await inventory_service.recompute_total_rooms(db, property_id, created_room.room_type_id)
+
+        return created_room
 
     async def update_room(
         self, db: AsyncSession, room_id: str, room_in: RoomUpdate
     ) -> Room:
         room = await self.get_by_id(db, room_id)
+        old_rt_id = room.room_type_id
 
         if room_in.room_type_id:
             room_type = await crud_room_type.get(db, room_in.room_type_id)
@@ -66,11 +72,24 @@ class RoomService:
             if existing:
                 raise DuplicateEntityException("Room", "room_number", room_in.room_number)
 
-        return await crud_room.update(db, db_obj=room, obj_in=room_in)
+        updated_room = await crud_room.update(db, db_obj=room, obj_in=room_in)
+
+        from app.services.inventory_service import inventory_service
+        await inventory_service.recompute_total_rooms(db, updated_room.property_id, updated_room.room_type_id)
+        if old_rt_id != updated_room.room_type_id:
+            await inventory_service.recompute_total_rooms(db, updated_room.property_id, old_rt_id)
+
+        return updated_room
 
     async def delete_room(self, db: AsyncSession, room_id: str) -> Room:
         room = await self.get_by_id(db, room_id)
+        prop_id = room.property_id
+        rt_id = room.room_type_id
         await crud_room.remove(db, id=room_id)
+
+        from app.services.inventory_service import inventory_service
+        await inventory_service.recompute_total_rooms(db, prop_id, rt_id)
+
         return room
 
 

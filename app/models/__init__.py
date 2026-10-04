@@ -32,6 +32,7 @@ from app.models.folio import (
 )
 from app.models.invoice import Invoice, InvoiceLine
 from app.models.operation import NightAudit, DocumentSequence, AuditLog
+from app.models.room_type_inventory import RoomTypeInventory
 
 __all__ = [
     "User",
@@ -71,4 +72,5 @@ __all__ = [
     "NightAudit",
     "DocumentSequence",
     "AuditLog",
+    "RoomTypeInventory",
 ]

@@ -14,6 +14,8 @@ from app.routes.property_users import router as property_users_router
 from app.routes.auth import router as auth_router
 from app.routes.property_setup import router as property_setup_router
 from app.routes.reservations import router as reservations_router
+from app.routes.inventory import router as inventory_router
+from app.routes.room_blocks import router as room_blocks_router
 
 api_router = APIRouter()
 
@@ -31,5 +33,7 @@ api_router.include_router(roles_router)
 api_router.include_router(organization_users_router)
 api_router.include_router(property_users_router)
 api_router.include_router(reservations_router)
+api_router.include_router(inventory_router)
+api_router.include_router(room_blocks_router)
 
 __all__ = ["api_router"]

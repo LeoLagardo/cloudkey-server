@@ -44,7 +44,13 @@ class RoomTypeService:
 
         data = rt_in.model_dump(exclude_unset=True)
         data["property_id"] = property_id
-        return await crud_room_type.create(db, obj_in=data)
+        new_rt = await crud_room_type.create(db, obj_in=data)
+
+        # Initialize 365-day rolling inventory for newly created room type
+        from app.services.inventory_service import inventory_service
+        await inventory_service.generate_rolling_window(db, property_id=property_id, room_type_id=new_rt.id, days=365)
+
+        return new_rt
 
     async def update_room_type(
         self, db: AsyncSession, room_type_id: str, rt_in: RoomTypeUpdate
