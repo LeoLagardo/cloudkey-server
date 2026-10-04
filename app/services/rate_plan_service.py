@@ -48,9 +48,17 @@ class RatePlanService:
         if existing:
             raise DuplicateEntityException("RatePlan", "code", plan_in.code)
 
-        data = plan_in.model_dump(exclude_unset=True)
+        base_rate_in = plan_in.base_rate
+        data = plan_in.model_dump(exclude_unset=True, exclude={"base_rate"})
         data["property_id"] = property_id
-        return await crud_rate_plan.create(db, obj_in=data)
+        plan = await crud_rate_plan.create(db, obj_in=data)
+
+        if base_rate_in:
+            r_data = base_rate_in.model_dump(exclude_unset=True)
+            r_data["rate_plan_id"] = plan.id
+            await crud_rate_plan_rate.create(db, obj_in=r_data)
+
+        return await self.get_by_id(db, plan.id)
 
     async def update_rate_plan(
         self, db: AsyncSession, rate_plan_id: str, plan_in: RatePlanUpdate
@@ -69,7 +77,9 @@ class RatePlanService:
             if existing:
                 raise DuplicateEntityException("RatePlan", "code", plan_in.code)
 
-        return await crud_rate_plan.update(db, db_obj=plan, obj_in=plan_in)
+        data = plan_in.model_dump(exclude_unset=True)
+        await crud_rate_plan.update(db, db_obj=plan, obj_in=data)
+        return await self.get_by_id(db, rate_plan_id)
 
     async def delete_rate_plan(self, db: AsyncSession, rate_plan_id: str) -> RatePlan:
         plan = await self.get_by_id(db, rate_plan_id)

@@ -17,6 +17,14 @@ from app.utils.enums import EntityStatus
 
 
 class CRUDTax(CRUDBase[Tax, TaxCreate, TaxUpdate]):
+    async def get(self, db: AsyncSession, id: str) -> Optional[Tax]:
+        result = await db.execute(
+            select(Tax)
+            .options(selectinload(Tax.rates))
+            .where(Tax.id == id)
+        )
+        return result.scalars().first()
+
     async def get_by_organization(
         self,
         db: AsyncSession,
@@ -64,6 +72,16 @@ class CRUDTaxRate(CRUDBase[TaxRate, TaxRateCreate, TaxRateCreate]):
 
 
 class CRUDTaxGroup(CRUDBase[TaxGroup, TaxGroupCreate, TaxGroupUpdate]):
+    async def get(self, db: AsyncSession, id: str) -> Optional[TaxGroup]:
+        result = await db.execute(
+            select(TaxGroup)
+            .options(
+                selectinload(TaxGroup.items).selectinload(TaxGroupItem.tax).selectinload(Tax.rates)
+            )
+            .where(TaxGroup.id == id)
+        )
+        return result.scalars().first()
+
     async def get_by_organization(
         self,
         db: AsyncSession,
@@ -100,6 +118,7 @@ class CRUDTaxGroup(CRUDBase[TaxGroup, TaxGroupCreate, TaxGroupUpdate]):
             )
         )
         return result.scalars().first()
+
 
 
 class CRUDTaxGroupItem(CRUDBase[TaxGroupItem, TaxGroupItemCreate, TaxGroupItemCreate]):

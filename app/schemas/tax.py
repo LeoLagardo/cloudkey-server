@@ -50,6 +50,10 @@ class TaxUpdate(BaseModel):
     name: Optional[str] = None
     code: Optional[str] = None
     status: Optional[EntityStatus] = None
+    rate: Optional[Decimal] = Field(None, ge=0)
+    rate_type: Optional[TaxRateType] = None
+    min_amount: Optional[Decimal] = None
+    max_amount: Optional[Decimal] = None
 
 
 class TaxResponse(TaxBase):
@@ -103,6 +107,15 @@ class TaxGroupUpdate(BaseModel):
     items: Optional[List[TaxGroupItemCreate]] = None
 
 
+class TaxGroupSimpleResponse(TaxGroupBase):
+    id: str
+    organization_id: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class TaxGroupResponse(TaxGroupBase):
     id: str
     organization_id: str
@@ -111,3 +124,4 @@ class TaxGroupResponse(TaxGroupBase):
     items: List[TaxGroupItemResponse] = []
 
     model_config = ConfigDict(from_attributes=True)
+

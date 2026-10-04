@@ -334,7 +334,8 @@ class PropertySetupService:
                             "max_occupancy": r_item.max_occupancy or rt.max_occupancy,
                         },
                     )
-                    created_plans.append(RatePlanResponse.model_validate(plan_obj))
+                    full_plan = await crud_rate_plan.get(db, plan_obj.id)
+                    created_plans.append(RatePlanResponse.model_validate(full_plan))
 
             # Case 2: single room_type_id and price on the plan itself
             elif plan_in.room_type_id and plan_in.price is not None:
@@ -367,7 +368,8 @@ class PropertySetupService:
                         "max_occupancy": rt.max_occupancy,
                     },
                 )
-                created_plans.append(RatePlanResponse.model_validate(plan_obj))
+                full_plan = await crud_rate_plan.get(db, plan_obj.id)
+                created_plans.append(RatePlanResponse.model_validate(full_plan))
 
         prop.setup_step = "TAXES"
         await db.commit()

@@ -103,7 +103,7 @@ class TaxRate(Base):
     rate: Mapped[Decimal] = mapped_column(Numeric(9, 4), nullable=False)
     min_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
     max_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
-    valid_from: Mapped[date] = mapped_column(Date, nullable=False)
+    valid_from: Mapped[date] = mapped_column(Date, default=date.today, nullable=False)
     valid_to: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
