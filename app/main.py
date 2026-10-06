@@ -10,14 +10,19 @@ from app.routes import api_router
 from app.utils.exceptions import PMSException
 from sqlalchemy.exc import IntegrityError
 
+from app.scheduler import start_scheduler, stop_scheduler
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Initialize database tables on startup (especially convenient for development/SQLite)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # Start APScheduler 1-minute poller for automated night audits
+    start_scheduler()
     yield
-    # Cleanup database engine on shutdown
+    # Stop scheduler and cleanup database engine on shutdown
+    stop_scheduler()
     await engine.dispose()
 
 

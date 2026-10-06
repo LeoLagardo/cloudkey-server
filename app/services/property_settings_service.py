@@ -37,8 +37,13 @@ class PropertySettingsService:
         settings_in: PropertySettingsUpdate,
     ) -> PropertySettings:
         settings = await self.get_by_property(db, property_id)
+        update_data = settings_in.model_dump(exclude_unset=True)
+        if "night_audit_config" in update_data and update_data["night_audit_config"] is not None:
+            existing_config = dict(settings.night_audit_config or {})
+            existing_config.update(update_data["night_audit_config"])
+            update_data["night_audit_config"] = existing_config
         return await crud_property_settings.update(
-            db, db_obj=settings, obj_in=settings_in
+            db, db_obj=settings, obj_in=update_data
         )
 
 

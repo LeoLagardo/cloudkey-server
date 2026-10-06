@@ -51,6 +51,8 @@ class NightAudit(Base):
     rooms_posted: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     no_shows_marked: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    trigger_type: Mapped[str] = mapped_column(Text, default="MANUAL", nullable=False)
+    summary_data: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
     run_by: Mapped[Optional[str]] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="SET NULL"),

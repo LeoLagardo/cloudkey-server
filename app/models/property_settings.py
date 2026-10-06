@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, time, timezone
 from typing import Optional, Dict, Any, TYPE_CHECKING
 from sqlalchemy import (
+    Boolean,
     String,
     DateTime,
     Time,
@@ -33,6 +34,10 @@ class PropertySettings(Base):
             "same_day_checkout_rule IN ('FULL_NIGHT', 'PARTIAL', 'DAY_USE')",
             name="chk_property_settings_same_day_checkout_rule",
         ),
+        CheckConstraint(
+            "night_audit_mode IN ('AUTO', 'MANUAL')",
+            name="chk_property_settings_night_audit_mode",
+        ),
     )
 
     id: Mapped[str] = mapped_column(
@@ -53,11 +58,13 @@ class PropertySettings(Base):
     language: Mapped[str] = mapped_column(Text, default="en", nullable=False)
     number_format: Mapped[str] = mapped_column(Text, default="en-IN", nullable=False)
     week_start_day: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    night_audit_mode: Mapped[str] = mapped_column(Text, default="MANUAL", nullable=False)
     night_audit_time: Mapped[time] = mapped_column(
         Time,
         default=time(2, 0),
         nullable=False,
     )
+    night_audit_config: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
     same_day_checkout_rule: Mapped[str] = mapped_column(
         Text, default="FULL_NIGHT", nullable=False
     )

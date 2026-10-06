@@ -238,3 +238,144 @@ async def test_create_reservation_without_advance_payment(async_client: AsyncCli
     assert len(data["payments"]) == 0
     assert data["folio"]["status"] == "OPEN"
     assert Decimal(str(data["total_amount"])) == Decimal("4000.00")
+
+
+@pytest.mark.asyncio
+async def test_checkin_checkout_and_same_day_flow(async_client: AsyncClient, db_session: AsyncSession):
+    # 1. Setup Property, Room Type, Rate Plan & Room
+    org_res = await async_client.post(
+        "/api/v1/organizations",
+        json={"name": "Palm Grove Hospitality", "slug": "palm-grove"},
+    )
+    org_id = org_res.json()["id"]
+
+    prop_res = await async_client.post(
+        "/api/v1/properties",
+        json={"name": "Palm Grove Hotel", "code": "PGH"},
+        headers={"X-Organization-ID": org_id},
+    )
+    prop_id = prop_res.json()["id"]
+
+    # Set same_day_checkout_rule in property settings
+    await async_client.put(
+        f"/api/v1/properties/{prop_id}/settings",
+        json={"same_day_checkout_rule": "FULL_NIGHT"},
+    )
+
+    rt_res = await async_client.post(
+        f"/api/v1/room-types?property_id={prop_id}",
+        json={"name": "Deluxe Palm Room", "code": "DPR"},
+    )
+    rt_id = rt_res.json()["id"]
+
+    rp_res = await async_client.post(
+        f"/api/v1/rate-plans?property_id={prop_id}",
+        json={"name": "Standard Rate", "code": "STD", "room_type_id": rt_id},
+    )
+    rp_id = rp_res.json()["id"]
+
+    await async_client.post(
+        f"/api/v1/rate-plans/{rp_id}/rates",
+        json={"duration": 1, "duration_unit": "NIGHT", "price": "3000.00"},
+    )
+
+    room_res = await async_client.post(
+        f"/api/v1/rooms?property_id={prop_id}",
+        json={"room_number": "101", "room_type_id": rt_id},
+    )
+    room_id = room_res.json()["id"]
+
+    # 2. Create a 3-night reservation
+    now = datetime.now(timezone.utc)
+    check_in = now + timedelta(days=1)
+    check_out = now + timedelta(days=4)
+
+    booking_res = await async_client.post(
+        f"/api/v1/reservations?property_id={prop_id}",
+        json={
+            "booking_type": "NIGHTLY",
+            "booker": {
+                "first_name": "Maya",
+                "last_name": "Lin",
+                "email": "maya@example.com",
+            },
+            "rooms": [
+                {
+                    "room_type_id": rt_id,
+                    "rate_plan_id": rp_id,
+                    "check_in_at": check_in.isoformat(),
+                    "check_out_at": check_out.isoformat(),
+                }
+            ],
+        },
+    )
+    assert booking_res.status_code == 201
+    res_data = booking_res.json()
+    res_id = res_data["id"]
+
+    # 3. Check-In: attempt early check-in without override -> rejected with 422
+    early_fail = await async_client.post(
+        f"/api/v1/reservations/{res_id}/check-in?property_id={prop_id}",
+        json={"room_id": room_id, "allow_early_checkin": False},
+    )
+    assert early_fail.status_code == 422
+    assert "Early arrival" in early_fail.text
+
+    # 4. Check-In with allow_early_checkin=True -> succeeds
+    check_in_res = await async_client.post(
+        f"/api/v1/reservations/{res_id}/check-in?property_id={prop_id}",
+        json={"room_id": room_id, "keycards_issued": 2, "allow_early_checkin": True},
+    )
+    assert check_in_res.status_code == 200
+    ci_data = check_in_res.json()
+    assert ci_data["status"] == "CHECKED_IN"
+    assert ci_data["rooms"][0]["room_id"] == room_id
+
+    # Verify physical room is now OCCUPIED
+    room_get = await async_client.get(f"/api/v1/rooms/{room_id}?property_id={prop_id}")
+    assert room_get.json()["occupancy_status"] == "OCCUPIED"
+
+    # 5. Test Undo Check-In: reverts back to CONFIRMED and frees physical room
+    undo_res = await async_client.post(
+        f"/api/v1/reservations/{res_id}/undo-check-in?property_id={prop_id}"
+    )
+    assert undo_res.status_code == 200
+    assert undo_res.json()["status"] == "CONFIRMED"
+    room_after_undo = await async_client.get(f"/api/v1/rooms/{room_id}?property_id={prop_id}")
+    assert room_after_undo.json()["occupancy_status"] == "VACANT"
+
+    # 6. Re-check in to test checkout flow
+    await async_client.post(
+        f"/api/v1/reservations/{res_id}/check-in?property_id={prop_id}",
+        json={"room_id": room_id, "allow_early_checkin": True},
+    )
+
+    # 4. Attempt Check-Out without settling balance or override -> rejected with 422
+    unpaid_co_res = await async_client.post(
+        f"/api/v1/reservations/{res_id}/check-out?property_id={prop_id}",
+        json={"allow_unpaid_override": False},
+    )
+    assert unpaid_co_res.status_code == 422
+    assert "outstanding balance" in unpaid_co_res.text
+
+    # 5. Check-Out with settlement payment & same-day/early departure
+    co_res = await async_client.post(
+        f"/api/v1/reservations/{res_id}/check-out?property_id={prop_id}",
+        json={
+            "settlement_payment": {
+                "payment_method": "CASH",
+                "amount": "9000.00",
+                "reference": "REC-9988",
+            }
+        },
+    )
+    assert co_res.status_code == 200
+    co_data = co_res.json()
+    assert co_data["status"] == "CHECKED_OUT"
+    assert co_data["folio"]["status"] == "CLOSED"
+
+    # Verify physical room transitioned to VACANT and DIRTY
+    room_after = await async_client.get(f"/api/v1/rooms/{room_id}?property_id={prop_id}")
+    assert room_after.json()["occupancy_status"] == "VACANT"
+    assert room_after.json()["housekeeping_status"] == "DIRTY"
+
