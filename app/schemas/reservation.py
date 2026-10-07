@@ -228,3 +228,6 @@ class ReservationCheckOutRequest(BaseModel):
     allow_unpaid_override: bool = False
     override_reason: Optional[str] = None
     same_day_charge_type: Optional[str] = None
+    generate_tax_invoice: bool = False
+    recipient_type: Optional[str] = "GUEST"
+    company_id: Optional[str] = None

@@ -942,14 +942,36 @@ class ReservationService:
                     is_same_day = True
                     break
 
-            if not has_room_charge:
-                # Apply same-day checkout rule or standard stay charge
-                charge_rule = (
-                    payload.same_day_charge_type
-                    if payload and payload.same_day_charge_type
-                    else (prop_settings.same_day_checkout_rule if (prop_settings and is_same_day) else "FULL_NIGHT")
-                )
+            charge_rule = (
+                payload.same_day_charge_type
+                if payload and payload.same_day_charge_type
+                else (prop_settings.same_day_checkout_rule if (prop_settings and is_same_day) else "FULL_NIGHT")
+            )
 
+            # Find all unposted room rates across reservation rooms
+            from app.services.folio_service import folio_service
+            unposted_rates = [
+                (r_room, rr)
+                for r_room in reservation.rooms
+                for rr in r_room.room_rates
+                if rr.folio_transaction_id is None
+            ]
+
+            if unposted_rates:
+                if charge_rule != "WAIVED":
+                    discount_factor = Decimal("0.50") if charge_rule in ("DAY_USE", "PARTIAL") else Decimal("1.00")
+                    for r_room, rr in unposted_rates:
+                        await folio_service.post_room_rate_transaction(
+                            db=db,
+                            property_id=property_id,
+                            folio_id=folio.id,
+                            room_rate=rr,
+                            reservation_room=r_room,
+                            current_user_id=current_user_id,
+                            discount_factor=discount_factor,
+                        )
+            elif not has_room_charge:
+                # Fallback for reservations created without room_rate snapshots
                 charge_amount = Decimal("0.00")
                 total_stay = reservation.total_amount or Decimal("0.00")
                 if charge_rule == "WAIVED":
@@ -1069,6 +1091,29 @@ class ReservationService:
         )
         db.add(audit_log)
         await db.commit()
+
+        # 7. Optional Tax Invoice generation on checkout
+        if payload and payload.generate_tax_invoice and folio:
+            from app.schemas.invoice import InvoiceGenerateRequest
+            from app.services.invoice_service import invoice_service
+            from app.utils.enums import InvoiceType
+
+            inv_payload = InvoiceGenerateRequest(
+                folio_id=folio.id,
+                invoice_type=InvoiceType.TAX_INVOICE.value,
+                recipient_type=payload.recipient_type or "GUEST",
+                company_id=payload.company_id or reservation.company_id,
+            )
+            try:
+                await invoice_service.generate_invoice(
+                    db,
+                    property_id=property_id,
+                    payload=inv_payload,
+                    current_user_id=current_user_id,
+                )
+            except Exception:
+                # Folio may have no billable debit charges or already invoiced
+                pass
 
         return await self.get_reservation(db, property_id=property_id, reservation_id=reservation_id)
 

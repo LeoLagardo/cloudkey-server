@@ -13,7 +13,7 @@ from app.models.folio import (
 )
 from app.models.operation import AuditLog
 from app.models.property import Property
-from app.models.reservation import Reservation, ReservationRoom
+from app.models.reservation import Reservation, ReservationRoom, ReservationRoomRate
 from app.models.service import Service
 from app.models.tax import Tax, TaxGroup, TaxGroupItem, TaxRate
 from app.schemas.folio import (
@@ -426,5 +426,115 @@ class FolioService:
             transactions=tx_responses,
         )
 
+    async def post_room_rate_transaction(
+        self,
+        db: AsyncSession,
+        property_id: str,
+        folio_id: str,
+        room_rate: ReservationRoomRate,
+        reservation_room: ReservationRoom,
+        current_user_id: Optional[str] = None,
+        discount_factor: Decimal = Decimal("1.00"),
+    ) -> FolioTransaction:
+        """
+        Posts an individual stay night (ReservationRoomRate) to the folio as a ROOM_CHARGE debit.
+        Stamps SAC 996311, computes taxes via RatePlan's TaxGroup, creates FolioTransactionTax entries,
+        and links room_rate.folio_transaction_id.
+        """
+        net_amt = (room_rate.net_amount * discount_factor).quantize(Decimal("0.01"))
+        tax_amt = Decimal("0.00")
+
+        # 1. Resolve room label & description
+        room_number = reservation_room.room_number or (reservation_room.room.room_number if reservation_room.room else None)
+        room_type_name = reservation_room.room_type_name or (reservation_room.room_type.name if reservation_room.room_type else None)
+        room_part = f"Room {room_number}" if room_number else "Room"
+        type_part = f" ({room_type_name})" if room_type_name else ""
+        description = f"Room Night Charge - {room_part}{type_part} - {room_rate.stay_date}"
+
+        # 2. Resolve Tax Group & calculate taxes
+        tax_group_id = reservation_room.rate_plan.tax_group_id if reservation_room.rate_plan else None
+        txn_taxes_to_add: List[FolioTransactionTax] = []
+
+        if tax_group_id:
+            tg_q = await db.execute(
+                select(TaxGroup)
+                .options(selectinload(TaxGroup.items))
+                .where(TaxGroup.id == tax_group_id)
+            )
+            tg_obj = tg_q.scalar_one_or_none()
+            if tg_obj and tg_obj.items:
+                for item in tg_obj.items:
+                    rate_q = await db.execute(
+                        select(TaxRate)
+                        .where(
+                            TaxRate.tax_id == item.tax_id,
+                            TaxRate.valid_from <= room_rate.stay_date,
+                            or_(TaxRate.valid_to.is_(None), TaxRate.valid_to >= room_rate.stay_date),
+                        )
+                        .order_by(TaxRate.created_at.desc())
+                    )
+                    tax_rate_obj = rate_q.scalars().first()
+                    tax_q = await db.execute(select(Tax).where(Tax.id == item.tax_id))
+                    tax_ent = tax_q.scalar_one_or_none()
+
+                    if tax_rate_obj and tax_ent:
+                        tax_line_amt = (
+                            (net_amt * tax_rate_obj.rate / Decimal("100")).quantize(Decimal("0.01"))
+                            if tax_rate_obj.rate_type == TaxRateType.PERCENTAGE.value
+                            else tax_rate_obj.rate.quantize(Decimal("0.01"))
+                        )
+                        tax_amt += tax_line_amt
+                        txn_taxes_to_add.append(
+                            FolioTransactionTax(
+                                tax_id=item.tax_id,
+                                tax_rate_id=tax_rate_obj.id,
+                                tax_name=tax_ent.name,
+                                rate=tax_rate_obj.rate,
+                                taxable_amount=net_amt,
+                                tax_amount=tax_line_amt,
+                            )
+                        )
+
+        if not txn_taxes_to_add and room_rate.tax_amount:
+            tax_amt = (room_rate.tax_amount * discount_factor).quantize(Decimal("0.01"))
+
+        tot_amt = net_amt + tax_amt
+        now_utc = datetime.now(timezone.utc)
+
+        # 3. Create FolioTransaction
+        folio_txn = FolioTransaction(
+            property_id=property_id,
+            folio_id=folio_id,
+            business_date=room_rate.stay_date,
+            entry_type=FolioEntryType.DEBIT.value,
+            transaction_type=FolioTransactionType.ROOM_CHARGE.value,
+            description=description,
+            quantity=Decimal("1.00"),
+            unit_price=net_amt,
+            amount=net_amt,
+            tax_amount=tax_amt,
+            total_amount=tot_amt,
+            tax_group_id=tax_group_id,
+            is_tax_inclusive=False,
+            hsn_sac_code="996311",
+            source=FolioTransactionSource.SYSTEM.value,
+            posted_by=current_user_id,
+            posted_at=now_utc,
+        )
+        db.add(folio_txn)
+        await db.flush()
+
+        # 4. Attach taxes
+        for t in txn_taxes_to_add:
+            t.folio_transaction_id = folio_txn.id
+            db.add(t)
+
+        # 5. Link room_rate
+        room_rate.folio_transaction_id = folio_txn.id
+        await db.flush()
+
+        return folio_txn
+
 
 folio_service = FolioService()
+
