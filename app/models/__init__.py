@@ -31,7 +31,7 @@ from app.models.folio import (
     FolioTransactionTax,
 )
 from app.models.invoice import Invoice, InvoiceLine
-from app.models.operation import NightAudit, DocumentSequence, AuditLog
+from app.models.operation import NightAudit, DocumentSequence, AuditLog, PropertyDailySummary
 from app.models.room_type_inventory import RoomTypeInventory
 
 __all__ = [
@@ -71,6 +71,7 @@ __all__ = [
     "Invoice",
     "InvoiceLine",
     "NightAudit",
+    "PropertyDailySummary",
     "DocumentSequence",
     "AuditLog",
     "RoomTypeInventory",

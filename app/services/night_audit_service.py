@@ -14,7 +14,7 @@ from app.models.folio import (
     Payment,
 )
 from app.models.guest import Guest
-from app.models.operation import AuditLog, NightAudit
+from app.models.operation import AuditLog, NightAudit, PropertyDailySummary
 from app.models.property import Property
 from app.models.property_settings import PropertySettings
 from app.models.rate_plan import RatePlan
@@ -435,6 +435,41 @@ class NightAuditService:
             )
             if notes:
                 summary_snapshot["audit_notes"] = notes
+
+            # 7b. Write dedicated daily summary row per property in property_daily_summaries table
+            pds_stmt = select(PropertyDailySummary).where(
+                PropertyDailySummary.property_id == property_id,
+                PropertyDailySummary.business_date == business_date,
+            )
+            pds_res = await db.execute(pds_stmt)
+            daily_summary = pds_res.scalar_one_or_none()
+
+            r_info = summary_snapshot.get("rooms", {})
+            f_info = summary_snapshot.get("financials", {})
+            s_info = summary_snapshot.get("settlements", {})
+
+            if not daily_summary:
+                daily_summary = PropertyDailySummary(
+                    property_id=property_id,
+                    business_date=business_date,
+                    night_audit_id=audit_record.id,
+                )
+                db.add(daily_summary)
+
+            daily_summary.night_audit_id = audit_record.id
+            daily_summary.total_rooms = r_info.get("total_rooms", 0)
+            daily_summary.rooms_available = r_info.get("rooms_available", 0)
+            daily_summary.rooms_sold = r_info.get("rooms_sold", 0)
+            daily_summary.rooms_ooo = r_info.get("rooms_ooo", 0)
+            daily_summary.occupancy_rate_percent = Decimal(str(r_info.get("occupancy_rate_percent", 0.0)))
+            daily_summary.room_revenue = Decimal(str(f_info.get("room_revenue", 0.0)))
+            daily_summary.service_revenue = Decimal(str(f_info.get("service_revenue", 0.0)))
+            daily_summary.tax_revenue = Decimal(str(f_info.get("total_tax", 0.0)))
+            daily_summary.total_revenue = Decimal(str(f_info.get("total_revenue", 0.0)))
+            daily_summary.adr = Decimal(str(f_info.get("adr", 0.0)))
+            daily_summary.revpar = Decimal(str(f_info.get("revpar", 0.0)))
+            daily_summary.total_payments_collected = Decimal(str(s_info.get("total_payments_collected", 0.0)))
+            daily_summary.no_shows_marked = no_shows_marked
 
             # 8. Advance the Hotel Business Date
             next_business_date = business_date + timedelta(days=1)

@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.folio import Folio, FolioTransaction
-from app.models.operation import NightAudit
+from app.models.operation import NightAudit, PropertyDailySummary
 from app.models.property import Property
 from app.models.property_settings import PropertySettings
 from app.models.reservation import Reservation, ReservationRoomRate
@@ -221,6 +221,20 @@ async def test_night_audit_full_flow(async_client: AsyncClient, db_session: Asyn
     assert posted_rate is not None
     assert posted_rate.folio_transaction_id == room_charge_txn.id
 
+    # Verify dedicated PropertyDailySummary row was written per property
+    pds_q = await db_session.execute(
+        select(PropertyDailySummary).where(
+            PropertyDailySummary.property_id == prop_id,
+            PropertyDailySummary.business_date == initial_business_date,
+        )
+    )
+    pds_row = pds_q.scalar_one_or_none()
+    assert pds_row is not None
+    assert pds_row.rooms_sold == 1
+    assert pds_row.no_shows_marked == 1
+    assert pds_row.room_revenue == Decimal("3500.00")
+    assert pds_row.total_revenue == Decimal("3500.00")
+
     # 11. Verify Audit History and Report Endpoints
     history_res = await async_client.get(f"/api/v1/properties/{prop_id}/night-audit/history")
     assert history_res.status_code == 200
@@ -282,7 +296,7 @@ async def test_scheduler_poller_execution(async_client: AsyncClient, db_session:
     # Case A: If local time is before 13:00 (e.g. 10:00), poller should NOT trigger
     from zoneinfo import ZoneInfo
     tz = ZoneInfo("Asia/Kolkata")
-    mock_morning = datetime(2026, 10, 6, 10, 0, 0, tzinfo=tz)
+    mock_morning = datetime.combine(initial_bdate, datetime.min.time()).replace(hour=10, tzinfo=tz)
 
     class MockDateTimeMorning:
         @classmethod
@@ -298,7 +312,7 @@ async def test_scheduler_poller_execution(async_client: AsyncClient, db_session:
     assert prop_obj.business_date == initial_bdate
 
     # Case B: If local time reaches or passes 13:00 (e.g. 13:05), poller SHOULD trigger!
-    mock_afternoon = datetime(2026, 10, 6, 13, 5, 0, tzinfo=tz)
+    mock_afternoon = datetime.combine(initial_bdate, datetime.min.time()).replace(hour=13, minute=5, tzinfo=tz)
 
     class MockDateTimeAfternoon:
         @classmethod

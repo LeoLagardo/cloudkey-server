@@ -22,6 +22,7 @@ from app.routes.services import router as services_router
 from app.routes.dashboard import router as dashboard_router
 from app.routes.night_audit import router as night_audit_router
 from app.routes.invoices import router as invoices_router
+from app.routes.reports import router as reports_router
 
 api_router = APIRouter()
 
@@ -47,5 +48,6 @@ api_router.include_router(services_router)
 api_router.include_router(dashboard_router)
 api_router.include_router(night_audit_router)
 api_router.include_router(invoices_router)
+api_router.include_router(reports_router)
 
 __all__ = ["api_router"]

@@ -7,6 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from app.crud.property import crud_property
 from app.models.folio import Folio, FolioTransaction, Payment
+from app.models.operation import PropertyDailySummary
 from app.models.property import Property
 from app.models.reservation import Reservation, ReservationRoom
 from app.models.room import Room
@@ -458,25 +459,41 @@ class DashboardService:
         # ─── 7-DAY OCCUPANCY FORECAST ──────────────────────────────────────────
         occupancy_trend: List[OccupancyDayTrend] = []
         start_date = target_date - timedelta(days=1)
+        end_date = start_date + timedelta(days=6)
         peak_percentage = -1
+
+        # Check property daily summary table for locked historical dates
+        pds_trend_q = await db.execute(
+            select(PropertyDailySummary).where(
+                PropertyDailySummary.property_id == property_id,
+                PropertyDailySummary.business_date >= start_date,
+                PropertyDailySummary.business_date <= end_date,
+            )
+        )
+        pds_trend_map = {row.business_date: row for row in pds_trend_q.scalars().all()}
 
         for i in range(7):
             d = start_date + timedelta(days=i)
-            # Count reservations that occupy a room on this date
-            day_occupied_count = 0
-            for r in all_reservations:
-                if r.status in (ReservationStatus.CANCELLED.value, ReservationStatus.NO_SHOW.value):
-                    continue
-                r_in = r.check_in_at.date() if isinstance(r.check_in_at, datetime) else r.check_in_at
-                r_out = r.check_out_at.date() if isinstance(r.check_out_at, datetime) else r.check_out_at
-                if r_in <= d < r_out:
-                    day_occupied_count += len(r.rooms) if r.rooms else 1
+            if d in pds_trend_map:
+                pds_row = pds_trend_map[d]
+                day_occupied_count = pds_row.rooms_sold
+                pct = int(pds_row.occupancy_rate_percent)
+            else:
+                # Count reservations that occupy a room on this date
+                day_occupied_count = 0
+                for r in all_reservations:
+                    if r.status in (ReservationStatus.CANCELLED.value, ReservationStatus.NO_SHOW.value):
+                        continue
+                    r_in = r.check_in_at.date() if isinstance(r.check_in_at, datetime) else r.check_in_at
+                    r_out = r.check_out_at.date() if isinstance(r.check_out_at, datetime) else r.check_out_at
+                    if r_in <= d < r_out:
+                        day_occupied_count += len(r.rooms) if r.rooms else 1
 
-            pct = (
-                min(100, round((day_occupied_count / total_rooms_count) * 100))
-                if total_rooms_count > 0
-                else 0
-            )
+                pct = (
+                    min(100, round((day_occupied_count / total_rooms_count) * 100))
+                    if total_rooms_count > 0
+                    else 0
+                )
             if pct > peak_percentage:
                 peak_percentage = pct
 
