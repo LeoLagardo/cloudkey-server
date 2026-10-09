@@ -20,6 +20,7 @@ from app.models.reservation import (
     ReservationGuest,
     ReservationRoom,
     ReservationRoomRate,
+    RoomBlock,
 )
 from app.models.room import Room
 from app.models.room_type import RoomType
@@ -221,6 +222,19 @@ class ReservationService:
                 if overlap_res.scalar_one_or_none():
                     raise ValidationException(
                         f"Room '{room_in.room_id}' has an existing overlapping reservation."
+                    )
+
+                block_res = await db.execute(
+                    select(RoomBlock).where(
+                        RoomBlock.room_id == room_in.room_id,
+                        RoomBlock.start_at < room_in.check_out_at,
+                        RoomBlock.end_at > room_in.check_in_at,
+                    )
+                )
+                active_blk = block_res.scalars().first()
+                if active_blk:
+                    raise ValidationException(
+                        f"Room '{room_in.room_id}' is blocked ({active_blk.block_type}) between {active_blk.start_at.strftime('%Y-%m-%d')} and {active_blk.end_at.strftime('%Y-%m-%d')}."
                     )
 
         from app.services.inventory_service import inventory_service
@@ -557,6 +571,20 @@ class ReservationService:
         if not room or room.property_id != property_id:
             raise EntityNotFoundException("Room", room_id)
 
+        # Check for active blocks on this room for the reservation stay dates
+        block_res = await db.execute(
+            select(RoomBlock).where(
+                RoomBlock.room_id == room.id,
+                RoomBlock.start_at < target_room.check_out_at,
+                RoomBlock.end_at > target_room.check_in_at,
+            )
+        )
+        active_blk = block_res.scalars().first()
+        if active_blk:
+            raise ValidationException(
+                f"Room {room.room_number} is blocked ({active_blk.block_type}) from {active_blk.start_at.strftime('%Y-%m-%d')} to {active_blk.end_at.strftime('%Y-%m-%d')}: {active_blk.reason or 'Scheduled block'}."
+            )
+
         old_room_id = target_room.room_id
         target_room.room_id = room.id
 
@@ -800,6 +828,20 @@ class ReservationService:
                     raise ValidationException(f"Invalid room '{target_room_id}' for property.")
                 if room_obj.occupancy_status == OccupancyStatus.OCCUPIED.value and r_room.room_id != target_room_id:
                     raise ValidationException(f"Room {room_obj.room_number} is already occupied.")
+
+                # Check for active blocks on this room
+                block_res = await db.execute(
+                    select(RoomBlock).where(
+                        RoomBlock.room_id == target_room_id,
+                        RoomBlock.start_at < r_room.check_out_at,
+                        RoomBlock.end_at > r_room.check_in_at,
+                    )
+                )
+                active_blk = block_res.scalars().first()
+                if active_blk:
+                    raise ValidationException(
+                        f"Cannot check in: Room {room_obj.room_number} is blocked ({active_blk.block_type}) until {active_blk.end_at.strftime('%Y-%m-%d')}."
+                    )
 
                 # Housekeeping dirty override check
                 if (

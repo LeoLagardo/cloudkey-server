@@ -1,3 +1,4 @@
+import builtins
 import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -297,6 +298,10 @@ class RoomBlock(Base):
     property: Mapped["Property"] = relationship("Property")
     room: Mapped["Room"] = relationship("Room")
     creator: Mapped[Optional["User"]] = relationship("User")
+
+    @builtins.property
+    def room_number(self) -> Optional[str]:
+        return self.room.room_number if self.room else None
 
 
 class ReservationRoomRate(Base):

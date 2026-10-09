@@ -30,3 +30,4 @@ class RoomBlockResponse(RoomBlockBase):
     property_id: str
     created_by: Optional[str] = None
     created_at: datetime
+    room_number: Optional[str] = None
