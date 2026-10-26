@@ -18,6 +18,15 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "sqlite+aiosqlite:///./pms.db"
 
+    # Aiosell Channel Manager Configuration
+    AIOSELL_BASE_URL: str = "https://live.aiosell.com/api/v2/cm"
+    AIOSELL_DEFAULT_PMS_SLUG: str = "sample-pms"
+    AIOSELL_USERNAME: str = ""
+    AIOSELL_PASSWORD: str = ""
+    AIOSELL_WEBHOOK_USERNAME: str = ""
+    AIOSELL_WEBHOOK_PASSWORD: str = ""
+    AIOSELL_CARD_DECRYPTION_KEY: str = ""
+
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = [
         "http://localhost:4200",

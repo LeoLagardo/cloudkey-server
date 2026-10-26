@@ -33,6 +33,11 @@ from app.models.folio import (
 from app.models.invoice import Invoice, InvoiceLine
 from app.models.operation import NightAudit, DocumentSequence, AuditLog, PropertyDailySummary
 from app.models.room_type_inventory import RoomTypeInventory
+from app.models.channel_manager import (
+    AiosellPropertyConfig,
+    AiosellRoomTypeMapping,
+    AiosellRatePlanMapping,
+)
 
 __all__ = [
     "User",
@@ -75,4 +80,7 @@ __all__ = [
     "DocumentSequence",
     "AuditLog",
     "RoomTypeInventory",
+    "AiosellPropertyConfig",
+    "AiosellRoomTypeMapping",
+    "AiosellRatePlanMapping",
 ]
