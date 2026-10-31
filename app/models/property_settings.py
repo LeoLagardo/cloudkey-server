@@ -58,7 +58,7 @@ class PropertySettings(Base):
     language: Mapped[str] = mapped_column(Text, default="en", nullable=False)
     number_format: Mapped[str] = mapped_column(Text, default="en-IN", nullable=False)
     week_start_day: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
-    night_audit_mode: Mapped[str] = mapped_column(Text, default="MANUAL", nullable=False)
+    night_audit_mode: Mapped[str] = mapped_column(Text, default="AUTO", nullable=False)
     night_audit_time: Mapped[time] = mapped_column(
         Time,
         default=time(2, 0),

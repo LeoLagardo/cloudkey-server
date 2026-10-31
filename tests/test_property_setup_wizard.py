@@ -216,7 +216,14 @@ async def test_full_property_setup_wizard_flow(async_client: AsyncClient):
                 "applies_to": "ROOM",
                 "tax_codes": ["CGST", "SGST"],
                 "is_compound": False,
-            }
+            },
+            {
+                "name": "GST 5",
+                "code": "GST5",
+                "applies_to": "ALL",
+                "tax_codes": ["CGST", "SGST"],
+                "is_compound": False,
+            },
         ],
         "apply_to_rate_plans": True,
         "is_tax_inclusive": False,
@@ -228,15 +235,17 @@ async def test_full_property_setup_wizard_flow(async_client: AsyncClient):
     )
     assert tax_res.status_code == 201
     created_tax_groups = tax_res.json()
-    assert len(created_tax_groups) == 1
+    assert len(created_tax_groups) == 2
     assert created_tax_groups[0]["code"] == "GST_ROOM_12"
+    assert created_tax_groups[1]["code"] == "GST5"
+    assert created_tax_groups[1]["applies_to"] == "ALL"
 
     status_res = await async_client.get(
         f"/api/v1/properties/{prop_id}/setup/status",
         headers=headers,
     )
     assert status_res.json()["steps"]["taxes"]["is_completed"] is True
-    assert status_res.json()["steps"]["taxes"]["count"] == 1
+    assert status_res.json()["steps"]["taxes"]["count"] == 2
 
     # =========================================================================
     # 6. Step 5: Configure Property Booking Settings
@@ -280,7 +289,7 @@ async def test_full_property_setup_wizard_flow(async_client: AsyncClient):
     assert complete_data["current_step"] == "COMPLETED"
     assert complete_data["summary"]["rooms_count"] == 6
     assert complete_data["summary"]["room_types_count"] == 2
-    assert complete_data["summary"]["tax_groups_count"] == 1
+    assert complete_data["summary"]["tax_groups_count"] == 2
 
     # Status is now COMPLETED
     status_res = await async_client.get(
@@ -309,7 +318,7 @@ async def test_full_property_setup_wizard_flow(async_client: AsyncClient):
     assert metrics["available_rooms"] == 6
     assert metrics["total_room_types"] == 2
     assert metrics["active_rate_plans"] == 3
-    assert metrics["total_tax_groups"] == 1
+    assert metrics["total_tax_groups"] == 2
 
     # Check policies
     policies = dashboard["policies"]

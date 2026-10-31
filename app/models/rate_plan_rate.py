@@ -36,8 +36,11 @@ class RatePlanRate(Base):
     duration: Mapped[int] = mapped_column(Integer, nullable=False)
     duration_unit: Mapped[str] = mapped_column(Text, nullable=False)
     price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    occupancy: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     min_occupancy: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     max_occupancy: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    extra_adult_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
+    extra_child_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
     valid_from: Mapped[Optional[date]] = mapped_column(Date, nullable=True, index=True)
     valid_to: Mapped[Optional[date]] = mapped_column(Date, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(

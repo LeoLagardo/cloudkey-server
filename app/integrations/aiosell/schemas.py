@@ -92,6 +92,9 @@ class RateItem(BaseModel):
     roomCode: str
     rateplanCode: str
     rate: float = Field(ge=0.0, description="Nightly sell rate")
+    extra_adult: Optional[float] = Field(None, description="Extra adult charge")
+    extra_child: Optional[float] = Field(None, description="Extra child charge")
+    occupancy: Optional[int] = Field(None, description="Base occupancy count")
 
 
 class RateUpdateBlock(BaseModel):

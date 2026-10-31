@@ -50,8 +50,6 @@ async def get_aiosell_client_for_property(
 
     client = AiosellClient(
         pms_slug=config.pms_slug,
-        username=config.api_username,
-        password=config.api_password,
     )
     return client, config
 

@@ -78,6 +78,7 @@ class TaxRateType(str, Enum):
 class TaxAppliesTo(str, Enum):
     ROOM = "ROOM"
     SERVICE = "SERVICE"
+    ALL = "ALL"
 
 
 class ServiceCategory(str, Enum):

@@ -111,6 +111,7 @@ class ReservationRoomRateResponse(BaseModel):
     id: str
     stay_date: date
     rate_plan_rate_id: Optional[str] = None
+    occupancy: Optional[int] = 1
     base_amount: Decimal
     extra_person_amount: Decimal
     discount_amount: Decimal

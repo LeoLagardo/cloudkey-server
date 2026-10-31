@@ -7,7 +7,7 @@ from app.schemas.property_booking_settings import PropertyBookingSettingsRespons
 from app.schemas.room import RoomCreate, RoomResponse
 from app.schemas.room_type import RoomTypeCreate, RoomTypeResponse
 from app.schemas.tax import TaxGroupResponse
-from app.utils.enums import BookingType, DurationUnit
+from app.utils.enums import BookingType, DurationUnit, TaxAppliesTo
 
 
 class StepProgress(BaseModel):
@@ -64,6 +64,11 @@ class SetupRateItem(BaseModel):
     duration_unit: DurationUnit = DurationUnit.NIGHT
     min_occupancy: Optional[int] = None
     max_occupancy: Optional[int] = None
+    single_price: Optional[float] = None
+    double_price: Optional[float] = None
+    triple_price: Optional[float] = None
+    extra_adult_price: Optional[float] = None
+    extra_child_price: Optional[float] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -86,6 +91,11 @@ class SetupRatePlanItem(BaseModel):
     booking_type: BookingType = BookingType.NIGHTLY
     description: Optional[str] = None
     currency: str = "INR"
+    meal_plan: str = "EP"
+    no_of_meals: int = 0
+    color_code: str = "#4F46E5"
+    extra_adult_rate: float = 0.0
+    extra_child_rate: float = 0.0
     price: Optional[float] = None
     duration: int = 1
     duration_unit: DurationUnit = DurationUnit.NIGHT
@@ -108,7 +118,7 @@ class TaxSetupItem(BaseModel):
 class TaxGroupSetupItem(BaseModel):
     name: str = Field(..., min_length=1, examples=["GST - Room 12%"])
     code: str = Field(..., min_length=1, examples=["GST_ROOM_12"])
-    applies_to: str = "ROOM"
+    applies_to: TaxAppliesTo = TaxAppliesTo.ROOM
     tax_codes: List[str] = Field(..., min_length=1, examples=[["CGST", "SGST"]])
     is_compound: bool = False
 

@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -15,6 +16,11 @@ class RatePlanBase(BaseModel):
     description: Optional[str] = None
     currency: str = Field(default="INR")
     status: EntityStatus = Field(default=EntityStatus.ACTIVE)
+    meal_plan: str = Field(default="EP", examples=["EP", "CP", "MAP", "AP"])
+    no_of_meals: int = Field(default=0, ge=0)
+    color_code: str = Field(default="#4F46E5", examples=["#4F46E5"])
+    extra_adult_rate: Decimal = Field(default=Decimal("0.00"), ge=Decimal("0.00"))
+    extra_child_rate: Decimal = Field(default=Decimal("0.00"), ge=Decimal("0.00"))
     tax_group_id: Optional[str] = None
     is_tax_inclusive: bool = False
 
@@ -32,6 +38,11 @@ class RatePlanUpdate(BaseModel):
     description: Optional[str] = None
     currency: Optional[str] = None
     status: Optional[EntityStatus] = None
+    meal_plan: Optional[str] = None
+    no_of_meals: Optional[int] = None
+    color_code: Optional[str] = None
+    extra_adult_rate: Optional[Decimal] = None
+    extra_child_rate: Optional[Decimal] = None
     room_type_id: Optional[str] = None
     tax_group_id: Optional[str] = None
     is_tax_inclusive: Optional[bool] = None

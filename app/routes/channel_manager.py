@@ -43,9 +43,6 @@ router = APIRouter(tags=["Channel Manager (Aiosell)"])
 class ConfigureAiosellRequest(BaseModel):
     aiosell_hotel_code: str
     pms_slug: Optional[str] = "sample-pms"
-    api_username: Optional[str] = None
-    api_password: Optional[str] = None
-    card_decryption_key: Optional[str] = None
     sync_inventory: bool = True
     sync_rates: bool = True
     sync_restrictions: bool = True
@@ -124,12 +121,6 @@ async def configure_aiosell(
     if config:
         config.aiosell_hotel_code = payload.aiosell_hotel_code
         config.pms_slug = payload.pms_slug or config.pms_slug
-        if payload.api_username is not None:
-            config.api_username = payload.api_username
-        if payload.api_password is not None:
-            config.api_password = payload.api_password
-        if payload.card_decryption_key is not None:
-            config.card_decryption_key = payload.card_decryption_key
         config.sync_inventory = payload.sync_inventory
         config.sync_rates = payload.sync_rates
         config.sync_restrictions = payload.sync_restrictions
@@ -138,9 +129,6 @@ async def configure_aiosell(
             property_id=property_id,
             aiosell_hotel_code=payload.aiosell_hotel_code,
             pms_slug=payload.pms_slug or "sample-pms",
-            api_username=payload.api_username,
-            api_password=payload.api_password,
-            card_decryption_key=payload.card_decryption_key,
             sync_inventory=payload.sync_inventory,
             sync_rates=payload.sync_rates,
             sync_restrictions=payload.sync_restrictions,
@@ -149,6 +137,37 @@ async def configure_aiosell(
 
     await db.commit()
     return {"message": "Aiosell configuration saved successfully"}
+
+
+@router.get(
+    "/properties/{property_id}/channel-manager/aiosell/config",
+    summary="Get Aiosell integration credentials and status for property",
+)
+async def get_aiosell_config(
+    property_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    config = await get_property_config(db, property_id)
+    if not config:
+        return {
+            "property_id": property_id,
+            "aiosell_hotel_code": "",
+            "pms_slug": "sample-pms",
+            "is_active": False,
+            "sync_inventory": True,
+            "sync_rates": True,
+            "sync_restrictions": True,
+        }
+    return {
+        "property_id": config.property_id,
+        "aiosell_hotel_code": config.aiosell_hotel_code,
+        "pms_slug": config.pms_slug,
+        "is_active": config.is_active,
+        "sync_inventory": config.sync_inventory,
+        "sync_rates": config.sync_rates,
+        "sync_restrictions": config.sync_restrictions,
+    }
 
 
 @router.post(
@@ -167,6 +186,36 @@ async def save_mappings(
         await set_rate_plan_mapping(db, property_id, rpm.cloudkey_id, rpm.aiosell_code)
     await db.commit()
     return {"message": "Mappings saved successfully"}
+
+
+@router.get(
+    "/properties/{property_id}/channel-manager/aiosell/mappings",
+    summary="Get saved room type and rate plan code mappings",
+)
+async def get_mappings(
+    property_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    from sqlalchemy import select
+    from app.models.channel_manager import AiosellRoomTypeMapping, AiosellRatePlanMapping
+
+    room_stmt = select(AiosellRoomTypeMapping).where(AiosellRoomTypeMapping.property_id == property_id)
+    room_mappings = (await db.execute(room_stmt)).scalars().all()
+
+    rate_stmt = select(AiosellRatePlanMapping).where(AiosellRatePlanMapping.property_id == property_id)
+    rate_mappings = (await db.execute(rate_stmt)).scalars().all()
+
+    return {
+        "room_mappings": [
+            {"cloudkey_id": rm.room_type_id, "aiosell_code": rm.aiosell_room_code}
+            for rm in room_mappings
+        ],
+        "rateplan_mappings": [
+            {"cloudkey_id": rpm.rate_plan_id, "aiosell_code": rpm.aiosell_rateplan_code}
+            for rpm in rate_mappings
+        ],
+    }
 
 
 @router.get(

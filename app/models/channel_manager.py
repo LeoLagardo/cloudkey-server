@@ -43,9 +43,6 @@ class AiosellPropertyConfig(Base):
     )
     aiosell_hotel_code: Mapped[str] = mapped_column(String(100), nullable=False)
     pms_slug: Mapped[str] = mapped_column(String(100), default="sample-pms", nullable=False)
-    api_username: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    api_password: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    card_decryption_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     sync_inventory: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

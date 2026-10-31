@@ -330,6 +330,7 @@ class ReservationRoomRate(Base):
         ForeignKey("rate_plan_rates.id", ondelete="SET NULL"),
         nullable=True,
     )
+    occupancy: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     base_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     extra_person_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
     discount_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)

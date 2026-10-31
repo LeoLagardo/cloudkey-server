@@ -328,32 +328,75 @@ class ReservationService:
             for night_idx in range(num_nights):
                 stay_date = start_date + timedelta(days=night_idx)
 
-                # Query active RatePlanRate matching stay_date
-                rate_query = await db.execute(
+                # Query active candidate RatePlanRates matching stay_date
+                candidates_query = await db.execute(
                     select(RatePlanRate).where(
                         RatePlanRate.rate_plan_id == room_in.rate_plan_id,
                         or_(RatePlanRate.valid_from.is_(None), RatePlanRate.valid_from <= stay_date),
                         or_(RatePlanRate.valid_to.is_(None), RatePlanRate.valid_to >= stay_date),
                     ).order_by(RatePlanRate.created_at.desc())
                 )
-                matched_rate = rate_query.scalars().first()
+                candidates = candidates_query.scalars().all()
 
-                if not matched_rate:
-                    # Fallback to any active rate under this rate plan
+                if not candidates:
+                    # Fallback to any active rates under this rate plan
                     fallback_query = await db.execute(
                         select(RatePlanRate).where(
                             RatePlanRate.rate_plan_id == room_in.rate_plan_id
                         ).order_by(RatePlanRate.created_at.desc())
                     )
-                    matched_rate = fallback_query.scalars().first()
+                    candidates = fallback_query.scalars().all()
 
-                if not matched_rate:
+                if not candidates:
                     raise ValidationException(
                         f"No rate configured for rate plan '{rate_plan.name if rate_plan else room_in.rate_plan_id}' on {stay_date}."
                     )
 
-                base_price = matched_rate.price
-                extra_person = Decimal("0.00")
+                # Occupancy-Based Pricing (OBP) Matching:
+                total_adults = max(1, room_in.adults)
+                total_children = max(0, room_in.children)
+                rt_obj = await db.get(RoomType, room_in.room_type_id)
+                base_occ = rt_obj.base_occupancy if (rt_obj and rt_obj.base_occupancy) else 1
+
+                # 1. Look for exact occupancy match
+                exact_match = next((r for r in candidates if r.occupancy == total_adults), None)
+                # 2. Look for range match
+                range_match = next(
+                    (r for r in candidates if (r.min_occupancy or 1) <= total_adults <= (r.max_occupancy or 99)),
+                    None
+                ) if not exact_match else None
+                # 3. Fallback to base occupancy match or first available candidate
+                base_match = next((r for r in candidates if r.occupancy == base_occ), candidates[0])
+
+                if exact_match:
+                    matched_rate = exact_match
+                    base_price = matched_rate.price
+                    extra_adults_count = 0
+                elif range_match:
+                    matched_rate = range_match
+                    base_price = matched_rate.price
+                    extra_adults_count = 0
+                else:
+                    matched_rate = base_match
+                    base_price = matched_rate.price
+                    tier_occ = matched_rate.occupancy or matched_rate.max_occupancy or base_occ
+                    extra_adults_count = max(0, total_adults - tier_occ)
+
+                # Extra adult and child pricing
+                extra_adult_fee = (
+                    matched_rate.extra_adult_price
+                    if matched_rate.extra_adult_price is not None
+                    else (rate_plan.extra_adult_rate if rate_plan else Decimal("0.00"))
+                )
+                extra_child_fee = (
+                    matched_rate.extra_child_price
+                    if matched_rate.extra_child_price is not None
+                    else (rate_plan.extra_child_rate if rate_plan else Decimal("0.00"))
+                )
+
+                extra_person = (Decimal(str(extra_adults_count)) * extra_adult_fee) + (
+                    Decimal(str(total_children)) * extra_child_fee
+                )
                 discount = Decimal("0.00")
                 net_price = base_price + extra_person - discount
 
@@ -369,6 +412,7 @@ class ReservationService:
                     reservation_room_id=res_room.id,
                     stay_date=stay_date,
                     rate_plan_rate_id=matched_rate.id,
+                    occupancy=total_adults,
                     base_amount=base_price,
                     extra_person_amount=extra_person,
                     discount_amount=discount,

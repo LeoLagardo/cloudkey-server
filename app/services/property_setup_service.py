@@ -298,7 +298,7 @@ class PropertySetupService:
                     if not rt or rt.property_id != property_id:
                         raise EntityNotFoundException("RoomType", r_item.room_type_id)
 
-                    code_prefix = slugify(plan_in.name).upper().replace("-", "")[:6]
+                    code_prefix = (plan_in.code or slugify(plan_in.name)).upper().replace("-", "")[:6]
                     rt_prefix = rt.code.upper().replace("-", "")[:4]
                     rate_code = f"{code_prefix}-{rt_prefix}"
 
@@ -319,21 +319,91 @@ class PropertySetupService:
                             "booking_type": plan_in.booking_type.value,
                             "description": plan_in.description,
                             "currency": plan_in.currency,
+                            "meal_plan": plan_in.meal_plan or "EP",
+                            "no_of_meals": plan_in.no_of_meals if plan_in.no_of_meals is not None else 0,
+                            "color_code": plan_in.color_code or "#4F46E5",
+                            "extra_adult_rate": plan_in.extra_adult_rate or 0.0,
+                            "extra_child_rate": plan_in.extra_child_rate or 0.0,
+                            "tax_group_id": plan_in.tax_group_id,
+                            "is_tax_inclusive": plan_in.is_tax_inclusive,
                             "status": EntityStatus.ACTIVE.value,
                         },
                     )
 
-                    await crud_rate_plan_rate.create(
-                        db,
-                        obj_in={
-                            "rate_plan_id": plan_obj.id,
-                            "duration": r_item.duration,
-                            "duration_unit": r_item.duration_unit.value,
-                            "price": r_item.price,
-                            "min_occupancy": r_item.min_occupancy or rt.base_occupancy,
-                            "max_occupancy": r_item.max_occupancy or rt.max_occupancy,
-                        },
+                    # Determine if discrete OBP tier pricing was provided
+                    has_obp_tiers = (
+                        r_item.single_price is not None
+                        or r_item.double_price is not None
+                        or r_item.triple_price is not None
                     )
+
+                    if has_obp_tiers:
+                        # 1. Single Occupancy Rate (1 Guest)
+                        if r_item.single_price is not None:
+                            await crud_rate_plan_rate.create(
+                                db,
+                                obj_in={
+                                    "rate_plan_id": plan_obj.id,
+                                    "duration": r_item.duration,
+                                    "duration_unit": r_item.duration_unit.value,
+                                    "price": r_item.single_price,
+                                    "occupancy": 1,
+                                    "min_occupancy": 1,
+                                    "max_occupancy": 1,
+                                    "extra_adult_price": r_item.extra_adult_price or plan_in.extra_adult_rate,
+                                    "extra_child_price": r_item.extra_child_price or plan_in.extra_child_rate,
+                                },
+                            )
+
+                        # 2. Double Occupancy Rate (2 Guests)
+                        double_rate = r_item.double_price or r_item.price
+                        await crud_rate_plan_rate.create(
+                            db,
+                            obj_in={
+                                "rate_plan_id": plan_obj.id,
+                                "duration": r_item.duration,
+                                "duration_unit": r_item.duration_unit.value,
+                                "price": double_rate,
+                                "occupancy": 2,
+                                "min_occupancy": 2,
+                                "max_occupancy": 2,
+                                "extra_adult_price": r_item.extra_adult_price or plan_in.extra_adult_rate,
+                                "extra_child_price": r_item.extra_child_price or plan_in.extra_child_rate,
+                            },
+                        )
+
+                        # 3. Triple Occupancy Rate (3 Guests) - if room max_occupancy >= 3
+                        if r_item.triple_price is not None and rt.max_occupancy >= 3:
+                            await crud_rate_plan_rate.create(
+                                db,
+                                obj_in={
+                                    "rate_plan_id": plan_obj.id,
+                                    "duration": r_item.duration,
+                                    "duration_unit": r_item.duration_unit.value,
+                                    "price": r_item.triple_price,
+                                    "occupancy": 3,
+                                    "min_occupancy": 3,
+                                    "max_occupancy": 3,
+                                    "extra_adult_price": r_item.extra_adult_price or plan_in.extra_adult_rate,
+                                    "extra_child_price": r_item.extra_child_price or plan_in.extra_child_rate,
+                                },
+                            )
+                    else:
+                        # Standard single rate row
+                        await crud_rate_plan_rate.create(
+                            db,
+                            obj_in={
+                                "rate_plan_id": plan_obj.id,
+                                "duration": r_item.duration,
+                                "duration_unit": r_item.duration_unit.value,
+                                "price": r_item.price,
+                                "occupancy": rt.base_occupancy,
+                                "min_occupancy": r_item.min_occupancy or rt.base_occupancy,
+                                "max_occupancy": r_item.max_occupancy or rt.max_occupancy,
+                                "extra_adult_price": r_item.extra_adult_price or plan_in.extra_adult_rate,
+                                "extra_child_price": r_item.extra_child_price or plan_in.extra_child_rate,
+                            },
+                        )
                     full_plan = await crud_rate_plan.get(db, plan_obj.id)
                     created_plans.append(RatePlanResponse.model_validate(full_plan))
 
@@ -354,6 +424,13 @@ class PropertySetupService:
                         "booking_type": plan_in.booking_type.value,
                         "description": plan_in.description,
                         "currency": plan_in.currency,
+                        "meal_plan": plan_in.meal_plan or "EP",
+                        "no_of_meals": plan_in.no_of_meals if plan_in.no_of_meals is not None else 0,
+                        "color_code": plan_in.color_code or "#4F46E5",
+                        "extra_adult_rate": plan_in.extra_adult_rate or 0.0,
+                        "extra_child_rate": plan_in.extra_child_rate or 0.0,
+                        "tax_group_id": plan_in.tax_group_id,
+                        "is_tax_inclusive": plan_in.is_tax_inclusive,
                         "status": EntityStatus.ACTIVE.value,
                     },
                 )
@@ -364,8 +441,11 @@ class PropertySetupService:
                         "duration": plan_in.duration,
                         "duration_unit": plan_in.duration_unit.value,
                         "price": plan_in.price,
+                        "occupancy": rt.base_occupancy,
                         "min_occupancy": rt.base_occupancy,
                         "max_occupancy": rt.max_occupancy,
+                        "extra_adult_price": plan_in.extra_adult_rate or 0.0,
+                        "extra_child_price": plan_in.extra_child_rate or 0.0,
                     },
                 )
                 full_plan = await crud_rate_plan.get(db, plan_obj.id)
@@ -422,7 +502,7 @@ class PropertySetupService:
                         "organization_id": prop.organization_id,
                         "name": tg_in.name,
                         "code": tg_in.code,
-                        "applies_to": tg_in.applies_to,
+                        "applies_to": tg_in.applies_to.value if hasattr(tg_in.applies_to, "value") else str(tg_in.applies_to),
                         "status": EntityStatus.ACTIVE.value,
                     },
                 )

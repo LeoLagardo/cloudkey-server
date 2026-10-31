@@ -1,7 +1,8 @@
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import List, Optional, TYPE_CHECKING
-from sqlalchemy import Boolean, String, Text, DateTime, ForeignKey, UniqueConstraint, CheckConstraint
+from sqlalchemy import Boolean, String, Text, DateTime, ForeignKey, UniqueConstraint, CheckConstraint, Integer, Numeric
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -61,6 +62,11 @@ class RatePlan(Base):
         default=EntityStatus.ACTIVE.value,
         nullable=False,
     )
+    meal_plan: Mapped[str] = mapped_column(Text, default="EP", nullable=False)
+    no_of_meals: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    color_code: Mapped[str] = mapped_column(String(7), default="#4F46E5", nullable=False)
+    extra_adult_rate: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
+    extra_child_rate: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
     tax_group_id: Mapped[Optional[str]] = mapped_column(
         String(36),
         ForeignKey("tax_groups.id", ondelete="SET NULL"),

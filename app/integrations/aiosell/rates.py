@@ -66,17 +66,30 @@ async def push_property_rates(
             room_code = await resolve_aiosell_room_code(db, property_id, rp.room_type_id)
             rateplan_code = await resolve_aiosell_rateplan_code(db, property_id, rp.id)
 
-            # Find matching nightly rate
+            # Find matching nightly rate (prefer Double occupancy or standard)
             nightly_rate = next(
-                (r for r in rp.rates if r.duration_unit == "NIGHT"),
-                None
+                (r for r in rp.rates if r.duration_unit == "NIGHT" and r.occupancy == 2),
+                next((r for r in rp.rates if r.duration_unit == "NIGHT"), None),
             )
             if nightly_rate and nightly_rate.price is not None:
+                extra_adult_val = (
+                    float(rp.extra_adult_rate)
+                    if rp.extra_adult_rate
+                    else (float(nightly_rate.extra_adult_price) if nightly_rate.extra_adult_price else None)
+                )
+                extra_child_val = (
+                    float(rp.extra_child_rate)
+                    if rp.extra_child_rate
+                    else (float(nightly_rate.extra_child_price) if nightly_rate.extra_child_price else None)
+                )
                 rate_items.append(
                     RateItem(
                         roomCode=room_code,
                         rateplanCode=rateplan_code,
                         rate=float(nightly_rate.price),
+                        extra_adult=extra_adult_val,
+                        extra_child=extra_child_val,
+                        occupancy=nightly_rate.occupancy or 2,
                     )
                 )
         except Exception as e:

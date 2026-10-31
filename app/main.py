@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +12,33 @@ from app.utils.exceptions import PMSException
 from sqlalchemy.exc import IntegrityError
 
 from app.scheduler import start_scheduler, stop_scheduler
+from sqlalchemy import text
+
+
+def _run_sqlite_migrations(connection):
+    """Ensure newly introduced columns exist in existing SQLite database files."""
+    if connection.dialect.name == "sqlite":
+        def add_col(table: str, col: str, col_def: str):
+            res = connection.execute(text(f"PRAGMA table_info({table})"))
+            cols = [r[1] for r in res.fetchall()]
+            if col not in cols:
+                connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}"))
+
+        add_col("rate_plans", "meal_plan", "TEXT NOT NULL DEFAULT 'EP'")
+        add_col("rate_plans", "no_of_meals", "INTEGER NOT NULL DEFAULT 0")
+        add_col("rate_plans", "color_code", "VARCHAR(7) NOT NULL DEFAULT '#4F46E5'")
+        add_col("rate_plans", "extra_adult_rate", "NUMERIC(12, 2) NOT NULL DEFAULT 0.00")
+        add_col("rate_plans", "extra_child_rate", "NUMERIC(12, 2) NOT NULL DEFAULT 0.00")
+        add_col("rate_plan_rates", "occupancy", "INTEGER")
+        add_col("rate_plan_rates", "extra_adult_price", "NUMERIC(12, 2)")
+        add_col("rate_plan_rates", "extra_child_price", "NUMERIC(12, 2)")
+        add_col("reservation_room_rates", "occupancy", "INTEGER NOT NULL DEFAULT 1")
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 
 @asynccontextmanager
@@ -18,6 +46,7 @@ async def lifespan(app: FastAPI):
     # Initialize database tables on startup (especially convenient for development/SQLite)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_run_sqlite_migrations)
     # Start APScheduler 1-minute poller for automated night audits
     start_scheduler()
     yield

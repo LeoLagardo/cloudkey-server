@@ -10,8 +10,11 @@ class RatePlanRateBase(BaseModel):
     duration: int = Field(..., ge=1, examples=[1])
     duration_unit: DurationUnit = Field(default=DurationUnit.NIGHT)
     price: Decimal = Field(..., ge=Decimal("0.0"), examples=[Decimal("2500.00")])
+    occupancy: Optional[int] = Field(None, ge=1)
     min_occupancy: Optional[int] = Field(None, ge=1)
     max_occupancy: Optional[int] = Field(None, ge=1)
+    extra_adult_price: Optional[Decimal] = Field(None, ge=Decimal("0.0"))
+    extra_child_price: Optional[Decimal] = Field(None, ge=Decimal("0.0"))
     valid_from: Optional[date] = None
     valid_to: Optional[date] = None
 
@@ -36,8 +39,11 @@ class RatePlanRateUpdate(BaseModel):
     duration: Optional[int] = Field(None, ge=1)
     duration_unit: Optional[DurationUnit] = None
     price: Optional[Decimal] = Field(None, ge=Decimal("0.0"))
+    occupancy: Optional[int] = Field(None, ge=1)
     min_occupancy: Optional[int] = Field(None, ge=1)
     max_occupancy: Optional[int] = Field(None, ge=1)
+    extra_adult_price: Optional[Decimal] = Field(None, ge=Decimal("0.0"))
+    extra_child_price: Optional[Decimal] = Field(None, ge=Decimal("0.0"))
     valid_from: Optional[date] = None
     valid_to: Optional[date] = None
 

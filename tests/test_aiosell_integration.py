@@ -130,8 +130,6 @@ async def test_aiosell_reservation_webhook_lifecycle(db_session):
         property_id=prop.id,
         aiosell_hotel_code="sandbox-hotel",
         pms_slug="sample-pms",
-        api_username="testuser",
-        api_password="testpassword",
         is_active=True,
     )
     db_session.add(aiosell_config)
@@ -292,8 +290,6 @@ async def test_inventory_and_rate_push(db_session):
         property_id=prop.id,
         aiosell_hotel_code="hotel-push-1",
         pms_slug="sample-pms",
-        api_username="u",
-        api_password="p",
         sync_inventory=True,
         sync_rates=True,
         is_active=True,
@@ -409,9 +405,11 @@ async def test_webhook_endpoint_http(async_client, db_session):
         ]
     }
 
+    from app.config import settings
     response = await async_client.post(
         "/api/v1/webhooks/aiosell/reservations",
         json=webhook_payload,
+        auth=(settings.AIOSELL_WEBHOOK_USERNAME, settings.AIOSELL_WEBHOOK_PASSWORD),
     )
     assert response.status_code == 200
     data = response.json()

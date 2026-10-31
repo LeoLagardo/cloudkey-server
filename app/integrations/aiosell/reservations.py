@@ -7,6 +7,7 @@ from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import settings
 from app.integrations.aiosell.auth import decrypt_credit_card_payload
 from app.integrations.aiosell.exceptions import (
     AiosellConfigError,
@@ -181,11 +182,12 @@ async def _handle_book_action(
 
     # 6. Decrypt credit card if present
     decrypted_card = None
-    if payload.creditCard and config.card_decryption_key:
+    card_key = settings.AIOSELL_CARD_DECRYPTION_KEY
+    if payload.creditCard and card_key:
         try:
             decrypted_card = decrypt_credit_card_payload(
                 payload.creditCard.model_dump(),
-                config.card_decryption_key,
+                card_key,
             )
             logger.info(f"[Aiosell] Decrypted credit card details for booking {payload.bookingId}")
         except Exception as e:
