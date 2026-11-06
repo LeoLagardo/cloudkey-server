@@ -262,6 +262,8 @@ class DashboardService:
                         Decimal("0.00"),
                     )
                     total_settled = credits if credits > 0 else payments_total
+                    if debits == Decimal("0.00") and r.total_amount:
+                        debits = r.total_amount
                     folio_balance = max(Decimal("0.00"), debits - total_settled)
                 elif r.total_amount:
                     folio_balance = r.total_amount

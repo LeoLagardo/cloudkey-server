@@ -804,6 +804,10 @@ class ReservationService:
         if not reservation:
             raise EntityNotFoundException("Reservation", reservation_id)
 
+        # Idempotency: If already checked in, return the current state safely
+        if reservation.status == ReservationStatus.CHECKED_IN.value:
+            return reservation
+
         if reservation.status != ReservationStatus.CONFIRMED.value:
             raise ValidationException(f"Only CONFIRMED reservations can be checked in (current: {reservation.status}).")
 

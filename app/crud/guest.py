@@ -82,9 +82,9 @@ class CRUDGuest:
         existing = await self.find_guest(
             db,
             organization_id=organization_id,
-            guest_id=guest_data.guest_id,
-            phone=guest_data.phone,
-            email=str(guest_data.email) if guest_data.email else None,
+            guest_id=getattr(guest_data, "guest_id", None),
+            phone=getattr(guest_data, "phone", None),
+            email=str(guest_data.email) if getattr(guest_data, "email", None) else None,
         )
         if existing:
             # Update fields if provided and not previously set

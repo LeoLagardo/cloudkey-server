@@ -13,6 +13,10 @@ from app.crud.property_settings import (
     crud_property_settings,
     CRUDPropertySettings,
 )
+from app.crud.property_booking_engine_config import (
+    crud_property_booking_engine_config,
+    CRUDPropertyBookingEngineConfig,
+)
 from app.crud.role import crud_role, CRUDRole, crud_permission, CRUDPermission
 from app.crud.organization_user import crud_organization_user, CRUDOrganizationUser
 from app.crud.property_user import crud_property_user, CRUDPropertyUser
@@ -52,6 +56,8 @@ __all__ = [
     "CRUDPropertyBookingSettings",
     "crud_property_settings",
     "CRUDPropertySettings",
+    "crud_property_booking_engine_config",
+    "CRUDPropertyBookingEngineConfig",
     "crud_role",
     "CRUDRole",
     "crud_permission",

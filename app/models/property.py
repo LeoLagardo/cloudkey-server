@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from app.models.rate_plan import RatePlan
     from app.models.property_booking_settings import PropertyBookingSettings
     from app.models.property_settings import PropertySettings
+    from app.models.property_booking_engine_config import PropertyBookingEngineConfig
     from app.models.property_user import PropertyUser
 
 
@@ -113,6 +114,12 @@ class Property(Base):
     )
     settings: Mapped[Optional["PropertySettings"]] = relationship(
         "PropertySettings",
+        back_populates="property",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    booking_engine_config: Mapped[Optional["PropertyBookingEngineConfig"]] = relationship(
+        "PropertyBookingEngineConfig",
         back_populates="property",
         uselist=False,
         cascade="all, delete-orphan",

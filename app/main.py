@@ -33,6 +33,21 @@ def _run_sqlite_migrations(connection):
         add_col("rate_plan_rates", "extra_adult_price", "NUMERIC(12, 2)")
         add_col("rate_plan_rates", "extra_child_price", "NUMERIC(12, 2)")
         add_col("reservation_room_rates", "occupancy", "INTEGER NOT NULL DEFAULT 1")
+        # Room Types Media & Specs
+        add_col("room_types", "photos", "JSON NOT NULL DEFAULT '[]'")
+        add_col("room_types", "amenities", "JSON NOT NULL DEFAULT '[]'")
+        add_col("room_types", "size_sq_ft", "INTEGER")
+        add_col("room_types", "size_sqm", "INTEGER")
+        add_col("room_types", "bed_config", "TEXT")
+        add_col("room_types", "view_type", "TEXT")
+        add_col("room_types", "subtitle", "TEXT")
+        add_col("room_types", "badge", "VARCHAR(50)")
+        # Rate Plans Merchandising & Perks
+        add_col("rate_plans", "is_public_booking_engine", "BOOLEAN NOT NULL DEFAULT 1")
+        add_col("rate_plans", "public_badge", "VARCHAR(50)")
+        add_col("rate_plans", "included_perks", "JSON NOT NULL DEFAULT '[]'")
+        add_col("rate_plans", "photos", "JSON NOT NULL DEFAULT '[]'")
+        add_col("rate_plans", "public_sort_order", "INTEGER NOT NULL DEFAULT 0")
 
 
 logging.basicConfig(

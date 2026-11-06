@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import List, Optional, TYPE_CHECKING
-from sqlalchemy import Boolean, String, Text, DateTime, ForeignKey, UniqueConstraint, CheckConstraint, Integer, Numeric
+from sqlalchemy import Boolean, String, Text, DateTime, ForeignKey, UniqueConstraint, CheckConstraint, Integer, Numeric, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -74,6 +74,13 @@ class RatePlan(Base):
         index=True,
     )
     is_tax_inclusive: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # Booking Engine Publishing & Merchandising
+    is_public_booking_engine: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    public_badge: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    included_perks: Mapped[List[str]] = mapped_column(JSON, default=list, nullable=False)
+    photos: Mapped[List[str]] = mapped_column(JSON, default=list, nullable=False)
+    public_sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

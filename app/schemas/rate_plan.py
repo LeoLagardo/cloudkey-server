@@ -23,6 +23,11 @@ class RatePlanBase(BaseModel):
     extra_child_rate: Decimal = Field(default=Decimal("0.00"), ge=Decimal("0.00"))
     tax_group_id: Optional[str] = None
     is_tax_inclusive: bool = False
+    is_public_booking_engine: bool = True
+    public_badge: Optional[str] = None
+    included_perks: List[str] = Field(default_factory=list)
+    photos: List[str] = Field(default_factory=list)
+    public_sort_order: int = 0
 
 
 class RatePlanCreate(RatePlanBase):
@@ -46,6 +51,11 @@ class RatePlanUpdate(BaseModel):
     room_type_id: Optional[str] = None
     tax_group_id: Optional[str] = None
     is_tax_inclusive: Optional[bool] = None
+    is_public_booking_engine: Optional[bool] = None
+    public_badge: Optional[str] = None
+    included_perks: Optional[List[str]] = None
+    photos: Optional[List[str]] = None
+    public_sort_order: Optional[int] = None
 
 
 class RatePlanResponse(RatePlanBase):

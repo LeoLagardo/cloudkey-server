@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional, TYPE_CHECKING
-from sqlalchemy import String, Text, DateTime, ForeignKey, Integer, UniqueConstraint, CheckConstraint
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from sqlalchemy import String, Text, DateTime, ForeignKey, Integer, UniqueConstraint, CheckConstraint, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -46,6 +46,17 @@ class RoomType(Base):
         default=EntityStatus.ACTIVE.value,
         nullable=False,
     )
+
+    # Online Booking Engine & Media Enhancements
+    photos: Mapped[List[str]] = mapped_column(JSON, default=list, nullable=False)
+    amenities: Mapped[List[Dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    size_sq_ft: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    size_sqm: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    bed_config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    view_type: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    subtitle: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    badge: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

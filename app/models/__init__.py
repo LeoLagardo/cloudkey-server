@@ -6,6 +6,7 @@ from app.models.rate_plan import RatePlan
 from app.models.rate_plan_rate import RatePlanRate
 from app.models.property_booking_settings import PropertyBookingSettings
 from app.models.property_settings import PropertySettings
+from app.models.property_booking_engine_config import PropertyBookingEngineConfig
 from app.models.role import Role, Permission, role_permissions
 from app.models.organization_user import OrganizationUser
 from app.models.property_user import PropertyUser
@@ -49,6 +50,7 @@ __all__ = [
     "RatePlanRate",
     "PropertyBookingSettings",
     "PropertySettings",
+    "PropertyBookingEngineConfig",
     "Role",
     "Permission",
     "role_permissions",
