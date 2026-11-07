@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 from typing import List, Optional
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 
 class GuestBase(BaseModel):
@@ -21,6 +21,18 @@ class GuestBase(BaseModel):
     postal_code: Optional[str] = Field(None, max_length=20)
     gstin: Optional[str] = Field(None, max_length=50)
     notes: Optional[str] = None
+
+    @field_validator(
+        "last_name", "email", "phone", "date_of_birth", "nationality",
+        "id_type", "id_number", "address_line_1", "address_line_2",
+        "city", "state", "country", "postal_code", "gstin", "notes",
+        mode="before"
+    )
+    @classmethod
+    def empty_str_to_none(cls, v):
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
 
 class GuestCreate(GuestBase):
@@ -44,6 +56,18 @@ class GuestUpdate(BaseModel):
     postal_code: Optional[str] = Field(None, max_length=20)
     gstin: Optional[str] = Field(None, max_length=50)
     notes: Optional[str] = None
+
+    @field_validator(
+        "first_name", "last_name", "email", "phone", "date_of_birth", "nationality",
+        "id_type", "id_number", "address_line_1", "address_line_2",
+        "city", "state", "country", "postal_code", "gstin", "notes",
+        mode="before"
+    )
+    @classmethod
+    def empty_str_to_none(cls, v):
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
 
 class GuestReservationSummary(BaseModel):

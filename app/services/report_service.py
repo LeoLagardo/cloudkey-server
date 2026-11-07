@@ -984,7 +984,7 @@ class ReportService:
 
         conditions = [
             Payment.property_id == property_id,
-            Payment.status == PaymentStatus.CAPTURED.value,
+            Payment.status.in_([PaymentStatus.CAPTURED.value, "COMPLETED"]),
             func.date(Payment.received_at) >= start_d,
             func.date(Payment.received_at) <= end_d,
         ]
@@ -1025,8 +1025,8 @@ class ReportService:
             )
 
             r_name = (
-                f"{p.receiver.first_name} {p.receiver.last_name}".strip()
-                if p.receiver and (p.receiver.first_name or p.receiver.last_name)
+                p.receiver.full_name.strip()
+                if p.receiver and p.receiver.full_name
                 else (p.receiver.email if p.receiver else "System")
             )
 

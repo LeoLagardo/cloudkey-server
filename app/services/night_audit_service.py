@@ -774,7 +774,7 @@ class NightAuditService:
             .where(
                 Payment.property_id == property_id,
                 func.date(Payment.received_at) == business_date,
-                Payment.status == PaymentStatus.CAPTURED.value,
+                Payment.status.in_([PaymentStatus.CAPTURED.value, "COMPLETED"]),
             )
             .group_by(Payment.payment_type)
         )
