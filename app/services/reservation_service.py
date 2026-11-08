@@ -99,6 +99,7 @@ class ReservationService:
         tax_group_id: Optional[str],
         base_amount: Decimal,
         stay_date: date,
+        is_tax_inclusive: bool = False,
     ) -> Decimal:
         """Calculate total tax amount based on RatePlan's TaxGroup and active TaxRates."""
         if not tax_group_id:
@@ -114,7 +115,8 @@ class ReservationService:
         if not tax_group or not tax_group.items:
             return Decimal("0.00")
 
-        total_tax = Decimal("0.00")
+        total_pct = Decimal("0.00")
+        total_fixed = Decimal("0.00")
         for item in tax_group.items:
             # Query active rate for this tax
             rate_query = await db.execute(
@@ -131,10 +133,15 @@ class ReservationService:
             tax_rate = rate_query.scalars().first()
             if tax_rate:
                 if tax_rate.rate_type == TaxRateType.PERCENTAGE.value:
-                    tax_for_item = (base_amount * tax_rate.rate) / Decimal("100")
+                    total_pct += tax_rate.rate
                 else:
-                    tax_for_item = tax_rate.rate
-                total_tax += tax_for_item
+                    total_fixed += tax_rate.rate
+
+        if is_tax_inclusive and total_pct > Decimal("0.00"):
+            taxable = (base_amount / (Decimal("1.00") + (total_pct / Decimal("100")))).quantize(Decimal("0.01"))
+            total_tax = base_amount - taxable
+        else:
+            total_tax = ((base_amount * total_pct) / Decimal("100")) + total_fixed
 
         return total_tax.quantize(Decimal("0.01"))
 
@@ -347,7 +354,7 @@ class ReservationService:
                     )
                     candidates = fallback_query.scalars().all()
 
-                if not candidates:
+                if not candidates and room_in.custom_nightly_rate is None:
                     raise ValidationException(
                         f"No rate configured for rate plan '{rate_plan.name if rate_plan else room_in.rate_plan_id}' on {stay_date}."
                     )
@@ -358,60 +365,85 @@ class ReservationService:
                 rt_obj = await db.get(RoomType, room_in.room_type_id)
                 base_occ = rt_obj.base_occupancy if (rt_obj and rt_obj.base_occupancy) else 1
 
-                # 1. Look for exact occupancy match
-                exact_match = next((r for r in candidates if r.occupancy == total_adults), None)
-                # 2. Look for range match
-                range_match = next(
-                    (r for r in candidates if (r.min_occupancy or 1) <= total_adults <= (r.max_occupancy or 99)),
-                    None
-                ) if not exact_match else None
-                # 3. Fallback to base occupancy match or first available candidate
-                base_match = next((r for r in candidates if r.occupancy == base_occ), candidates[0])
+                matched_rate = None
+                if candidates:
+                    # 1. Look for exact occupancy match
+                    exact_match = next((r for r in candidates if r.occupancy == total_adults), None)
+                    # 2. Look for range match
+                    range_match = next(
+                        (r for r in candidates if (r.min_occupancy or 1) <= total_adults <= (r.max_occupancy or 99)),
+                        None
+                    ) if not exact_match else None
+                    # 3. Fallback to base occupancy match or first available candidate
+                    base_match = next((r for r in candidates if r.occupancy == base_occ), candidates[0])
 
-                if exact_match:
-                    matched_rate = exact_match
-                    base_price = matched_rate.price
-                    extra_adults_count = 0
-                elif range_match:
-                    matched_rate = range_match
-                    base_price = matched_rate.price
-                    extra_adults_count = 0
+                    if exact_match:
+                        matched_rate = exact_match
+                        base_price = matched_rate.price
+                        extra_adults_count = 0
+                    elif range_match:
+                        matched_rate = range_match
+                        base_price = matched_rate.price
+                        extra_adults_count = 0
+                    else:
+                        matched_rate = base_match
+                        base_price = matched_rate.price
+                        tier_occ = matched_rate.occupancy or matched_rate.max_occupancy or base_occ
+                        extra_adults_count = max(0, total_adults - tier_occ)
+
+                    # Extra adult and child pricing
+                    extra_adult_fee = (
+                        matched_rate.extra_adult_price
+                        if matched_rate.extra_adult_price is not None
+                        else (rate_plan.extra_adult_rate if rate_plan else Decimal("0.00"))
+                    )
+                    extra_child_fee = (
+                        matched_rate.extra_child_price
+                        if matched_rate.extra_child_price is not None
+                        else (rate_plan.extra_child_rate if rate_plan else Decimal("0.00"))
+                    )
+
+                    extra_person = (Decimal(str(extra_adults_count)) * extra_adult_fee) + (
+                        Decimal(str(total_children)) * extra_child_fee
+                    )
                 else:
-                    matched_rate = base_match
-                    base_price = matched_rate.price
-                    tier_occ = matched_rate.occupancy or matched_rate.max_occupancy or base_occ
-                    extra_adults_count = max(0, total_adults - tier_occ)
+                    base_price = Decimal("0.00")
+                    extra_person = Decimal("0.00")
 
-                # Extra adult and child pricing
-                extra_adult_fee = (
-                    matched_rate.extra_adult_price
-                    if matched_rate.extra_adult_price is not None
-                    else (rate_plan.extra_adult_rate if rate_plan else Decimal("0.00"))
-                )
-                extra_child_fee = (
-                    matched_rate.extra_child_price
-                    if matched_rate.extra_child_price is not None
-                    else (rate_plan.extra_child_rate if rate_plan else Decimal("0.00"))
-                )
+                if room_in.custom_nightly_rate is not None:
+                    base_price = Decimal(str(room_in.custom_nightly_rate)).quantize(Decimal("0.01"))
+                    extra_person = Decimal("0.00")
 
-                extra_person = (Decimal(str(extra_adults_count)) * extra_adult_fee) + (
-                    Decimal(str(total_children)) * extra_child_fee
-                )
-                discount = Decimal("0.00")
-                net_price = base_price + extra_person - discount
+                if room_in.discount_amount is not None and room_in.discount_amount > Decimal("0.00"):
+                    total_disc = Decimal(str(room_in.discount_amount)).quantize(Decimal("0.01"))
+                    per_night_disc = (total_disc / Decimal(str(num_nights))).quantize(Decimal("0.01"))
+                    if night_idx == num_nights - 1:
+                        discount = total_disc - (per_night_disc * Decimal(str(num_nights - 1)))
+                    else:
+                        discount = per_night_disc
+                else:
+                    discount = Decimal("0.00")
+
+                gross_night = max(Decimal("0.00"), base_price + extra_person - discount)
 
                 tax_price = await self._calculate_taxes_for_rate(
                     db,
                     tax_group_id=rate_plan.tax_group_id if rate_plan else None,
-                    base_amount=net_price,
+                    base_amount=gross_night,
                     stay_date=stay_date,
+                    is_tax_inclusive=bool(rate_plan.is_tax_inclusive) if rate_plan else False,
                 )
-                total_night = net_price + tax_price
+                if rate_plan and rate_plan.is_tax_inclusive:
+                    net_price = max(Decimal("0.00"), (gross_night - tax_price).quantize(Decimal("0.01")))
+                    total_night = gross_night
+                else:
+                    net_price = gross_night
+                    total_night = net_price + tax_price
 
                 res_room_rate = ReservationRoomRate(
                     reservation_room_id=res_room.id,
                     stay_date=stay_date,
-                    rate_plan_rate_id=matched_rate.id,
+                    rate_plan_rate_id=matched_rate.id if matched_rate else None,
                     occupancy=total_adults,
                     base_amount=base_price,
                     extra_person_amount=extra_person,

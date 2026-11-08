@@ -55,6 +55,8 @@ class ReservationRoomInput(BaseModel):
     check_out_at: datetime
     adults: int = Field(default=1, ge=1)
     children: int = Field(default=0, ge=0)
+    custom_nightly_rate: Optional[Decimal] = Field(default=None, ge=Decimal("0.00"))
+    discount_amount: Optional[Decimal] = Field(default=None, ge=Decimal("0.00"))
     guests: List[RoomGuestInput] = []
 
 
